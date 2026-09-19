@@ -46,7 +46,7 @@ jobs:
         run: npm run electron:build
 
       - name: Package (${{ matrix.script }})
-        run: npm run ${{ matrix.script }}
+        run: npm run ${{ matrix.script }} -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
