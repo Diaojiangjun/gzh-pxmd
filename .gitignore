@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# 打包产物与本地工作区
+release/
+dist-electron/
+.workbuddy/

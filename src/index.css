@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/* WeChat Editor typography smoothing and scrollbars */
+@layer base {
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+.gzh-preview-container img {
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 预览内容在窄屏（手机样机）下防横向溢出 */
+.gzh-preview-container {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.gzh-preview-container img,
+.gzh-preview-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.gzh-preview-container pre,
+.gzh-preview-container code {
+  max-width: 100%;
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+/* 微信深色模式（夜间模式）预览：反转文章底色与文字，同时还原图片原色 */
+.gzh-preview-dark .gzh-preview-container {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+.gzh-preview-dark .gzh-preview-container img {
+  filter: invert(0.92) hue-rotate(180deg);
+}

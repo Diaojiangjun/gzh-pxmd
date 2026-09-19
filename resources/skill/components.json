@@ -1,0 +1,51 @@
+[
+  {
+    "id": "hero-card",
+    "name": "头图信息卡",
+    "category": "header",
+    "description": "文章开篇头图与标题卡片，包含主题标签、发布日期及导语",
+    "snippet": ":::hero\n[CATEGORY] 深度深度思考\n# 文章主标题：关于排版美学的探索与实践\n> 导语：排版不仅是文字的容器，更是信息传达的第一层质感。好的排版让人沉浸阅读，如饮温茶。\n作者：专栏编辑部 · 预计阅读时间 5 分钟\n:::\n"
+  },
+  {
+    "id": "toc-component",
+    "name": "文章精简目录",
+    "category": "nav",
+    "description": "清晰的阶段阅读目录导览",
+    "snippet": ":::toc\n1. 核心理念：为什么排版决定停留时长\n2. 视觉层级：标题、正文与留白的黄金比\n3. 实战案例：从纯文本到公众号爆款排版\n4. 总结与常用工具清单\n:::\n"
+  },
+  {
+    "id": "heading-badge",
+    "name": "章节标题 - 徽章标",
+    "category": "heading",
+    "description": "带数字序号的胶囊徽章主标题",
+    "snippet": "## 01 / 视觉层级的黄金分割法则\n"
+  },
+  {
+    "id": "quote-card",
+    "name": "格言金句引用卡",
+    "category": "quote",
+    "description": "带双引号和底色衬托的金句卡片",
+    "snippet": ":::quote\n“细节不是细节，它们构成了设计本身。”\n—— 查尔斯·伊姆斯（Charles Eames）\n:::\n"
+  },
+  {
+    "id": "takeaway-card",
+    "name": "核心要点提炼卡",
+    "category": "highlight",
+    "description": "提炼关键见解、干货结论或实操步骤",
+    "snippet": ":::callout\n💡 **核心洞察速览**\n- 微信公众号文章最佳正文字号为 15px 或 16px\n- 段落间距建议为字号的 1.2~1.5 倍，保持通透呼吸感\n- 每篇文章核心颜色建议控制在 2~3 种之内\n:::\n"
+  },
+  {
+    "id": "code-mac",
+    "name": "Mac 终端代码卡片",
+    "category": "code",
+    "description": "带有红黄绿三色圆形按钮的现代代码块",
+    "snippet": "```typescript\n// 微信公众号一键排版核心逻辑示例\nexport function inlineWeChatStyles(markdown: string): string {\n  const theme = getActiveTheme();\n  return compileMarkdownToHtml(markdown, theme);\n}\n```\n"
+  },
+  {
+    "id": "footer-signature",
+    "name": "文章结尾署名卡",
+    "category": "footer",
+    "description": "文末互动、版权归属与点赞推荐卡片",
+    "snippet": ":::footer\n**感谢您的阅读与支持**\n如果本篇内容对您有启发，欢迎点击右下角「在看」或「点赞」，分享给更多热爱写作与设计的朋友！\n\n*本文系原创整理，转载请联系作者授权。*\n:::\n"
+  }
+]
