@@ -15,6 +15,7 @@ import {
   AIConfig,
   AIImageConfig,
   ChatMessage,
+  isEmptyConfigPatch,
 } from './ai';
 import {
   uploadImage,
@@ -177,8 +178,13 @@ function createWindow() {
 
   const loadApp = () => {
     if (win.isDestroyed()) return;
-    if (isDev) void win.loadURL(devUrl);
-    else void win.loadFile(prodIndex);
+    // 失败统一交给下面的 did-fail-load 重试逻辑处理。
+    // 这里必须显式 catch：loadURL 返回的 Promise 被 reject 后若无人接管，
+    // 会变成未处理 rejection（Electron 环境下可能直接终止主进程）。
+    const loading = isDev ? win.loadURL(devUrl) : win.loadFile(prodIndex);
+    void loading.catch(() => {
+      /* 已由 did-fail-load 监听并安排重试 */
+    });
   };
 
   /**
@@ -567,21 +573,28 @@ ipcMain.handle(
       p.image && typeof p.image === 'object' ? (p.image as Record<string, unknown>) : null;
     if (imgPatch) {
       const reqImgType = normStr(imgPatch.type);
-      const iType =
-        reqImgType && IMAGE_SERVICES.some((s) => s.key === reqImgType) ? reqImgType : image.type;
-      const iPreset = IMAGE_SERVICES.find((s) => s.key === iType);
       const reqImgEndpoint = normStr(imgPatch.endpoint);
       const reqImgModel = normStr(imgPatch.model);
-      image = {
-        type: iType,
-        endpoint:
-          reqImgEndpoint !== undefined
-            ? reqImgEndpoint
-            : image.endpoint || iPreset?.endpoint || '',
-        apiKey: patchSecret(imgPatch.apiKey, image.apiKey),
-        model: reqImgModel !== undefined ? reqImgModel : image.model,
-      };
-      writeImageConfig(image);
+
+      /**
+       * 「全空补丁」视为未修改（判定规则见 ai.ts 的 isEmptyConfigPatch 注释 ——
+       * 这里踩过的坑是：改一下对话设置会把已配好的生图端点抹掉）。
+       */
+      if (!isEmptyConfigPatch(imgPatch)) {
+        const iType =
+          reqImgType && IMAGE_SERVICES.some((s) => s.key === reqImgType) ? reqImgType : image.type;
+        const iPreset = IMAGE_SERVICES.find((s) => s.key === iType);
+        image = {
+          type: iType,
+          endpoint:
+            reqImgEndpoint !== undefined
+              ? reqImgEndpoint
+              : image.endpoint || iPreset?.endpoint || '',
+          apiKey: patchSecret(imgPatch.apiKey, image.apiKey),
+          model: reqImgModel !== undefined ? reqImgModel : image.model,
+        };
+        writeImageConfig(image);
+      }
     }
 
     return { ...toAIConfigView(next), image: toImageConfigView(image) };

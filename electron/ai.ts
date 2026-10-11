@@ -342,6 +342,33 @@ export function buildAIHeaders(apiKey: string, type: string): Record<string, str
   return headers;
 }
 
+/**
+ * 判断一个配置补丁是否「什么都没填」
+ *
+ * 存在的理由是个真实踩过的坑：渲染层的保存按钮**总是**把配置面板上的所有字段
+ * 一起发过来，其中没填的那些是空字符串。而 `normStr('')` 返回的是 `''` 而不是
+ * `undefined`，主进程按「 !== undefined 」判断「用户是否提供」时，空串会被当成
+ * 明确要求 —— 结果是**改一下对话温度，顺手把已配好的生图端点抹掉**。
+ *
+ * 这里统一收口：全空的补丁视为未提交，保留原值。
+ * 「主动清空」的能力不受影响：把服务选成「自定义」时 type 非空，属于真实修改。
+ */
+export function isEmptyConfigPatch(patch: Record<string, unknown> | null | undefined): boolean {
+  if (!patch || typeof patch !== 'object') return true;
+  const keys = Object.keys(patch);
+  if (keys.length === 0) return true;
+  // 任一字段有实质内容 → 视为真实修改
+  return keys.every((k) => {
+    const v = patch[k];
+    if (typeof v === 'string') return v.trim() === '';
+    if (v === undefined || v === null) return true;
+    // 数字 0 是有意义的值（温度 0 = 确定性输出），不能当成空
+    if (typeof v === 'number') return false;
+    if (typeof v === 'object') return isEmptyConfigPatch(v as Record<string, unknown>);
+    return false;
+  });
+}
+
 /** 从任意文本中抹掉形似密钥的片段（防止服务端回显 Key 后被展示给用户） */
 export function redactSecret(text: string): string {
   return String(text ?? '')
@@ -358,7 +385,13 @@ export function classifyAIError(message: string): { code: string; friendly: stri
   if (/402|429|quota|insufficient|balance|rate limit/i.test(m)) {
     return { code: 'QUOTA', friendly: '配额不足或请求过于频繁，请稍后再试或充值' };
   }
-  if (/404|model.*not.*found|no such model|未开通/i.test(m)) {
+  // 模型不存在：各家措辞与语序差异很大 ——
+  //   OpenAI "The model does not exist" / DeepSeek "model not found" / 部分网关 "no such model"
+  // 用「同时出现 model + 否定短语」来判定，与语序无关，避免漏判
+  const modelMissing =
+    /404/i.test(m) ||
+    /(?=.*(?:\bmodels?\b|模型))(?=.*(?:not\s*found|not\s*exist|no\s+such|does\s*n[o']?t\s*exist|不存在|未开通))/i.test(m);
+  if (modelMissing) {
     return { code: 'BAD_MODEL', friendly: '模型不存在或未开通，请检查模型名称' };
   }
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|fetch failed|network|socket hang up/i.test(m)) {

@@ -148,21 +148,55 @@ export const AIPanel: React.FC<AIPanelProps> = ({
 
   // ---------- 订阅流式增量 ----------
   useEffect(() => {
+    /**
+     * 增量按帧合并
+     *
+     * SSE 的 delta 是分散在不同 tick 到达的（每来一个就 setState 一次），
+     * 一篇长文的流式输出能产生几千次重渲染，预览面板跟着一起抖。
+     * 这里把累积结果挂到 ref，用 rAF 在下一帧统一提交一次 state。
+     *
+     * done / aborted / error 必须**冲刷**待提交的文本，否则最后几句会丢。
+     */
+    let rafId: number | null = null;
+
+    const flush = () => {
+      rafId = null;
+      setResult(resultRef.current);
+    };
+
+    const push = () => {
+      if (rafId === null) rafId = requestAnimationFrame(flush);
+    };
+
     const off = aiService.onStream((evt) => {
+      // 主动终止后 requestIdRef 已清空，此处会自然过滤掉所有在途的 delta
       if (evt.requestId !== requestIdRef.current) return;
       if (evt.type === 'delta') {
         resultRef.current += evt.text || '';
-        setResult(resultRef.current);
+        push();
       } else if (evt.type === 'reasoning') {
         setReasoning((p) => p + (evt.text || ''));
       } else if (evt.type === 'error') {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        setResult(resultRef.current);
         setError(evt.error || '请求失败');
         setStreaming(false);
       } else if (evt.type === 'done' || evt.type === 'aborted') {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          flush();
+        }
         setStreaming(false);
       }
     });
-    return off;
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      off();
+    };
   }, []);
 
   // ---------- 工具箱 ----------
@@ -202,8 +236,12 @@ export const AIPanel: React.FC<AIPanelProps> = ({
 
   const stopToolbox = async () => {
     if (!requestIdRef.current) return;
+    // 先作废 requestId：主进程的 abort 是异步的，这期间在途的 delta 仍会到达，
+    // 若不清空，它们会在「停止」之后继续往结果里追加文字。
+    const id = requestIdRef.current;
+    requestIdRef.current = '';
     try {
-      await aiService.abort(requestIdRef.current);
+      await aiService.abort(id);
     } catch (e) {
       console.warn('终止请求失败:', e);
     } finally {
