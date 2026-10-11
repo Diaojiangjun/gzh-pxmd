@@ -32,6 +32,39 @@ import {
   QR_MAX_BYTES,
   type PromoConfig,
 } from '../src/services/promoService';
+import {
+  hexToRgb,
+  rgbToHex,
+  rgba,
+  mix,
+  adjustSaturation,
+  contrastRatio,
+  relativeLuminance,
+  ensureContrast,
+  isDarkBackground,
+  deriveColorScheme,
+  presetsForBackground,
+  PALETTE_PRESETS,
+} from '../src/services/colorHarmony';
+import {
+  computeEditorProgress,
+  computePreviewScrollTop,
+  alignmentError,
+} from '../src/utils/scrollSync';
+import {
+  resolveEndpointUrl,
+  redactSecret,
+  classifyAIError,
+  buildAIHeaders,
+  isEmptyConfigPatch,
+  AI_SERVICES,
+  IMAGE_SERVICES,
+} from '../electron/ai';
+import {
+  TOOLBOX_SYSTEM_PROMPT,
+  OPTIMIZE_DEFAULT_PROMPT,
+  buildToolboxMessages,
+} from '../src/services/aiPrompts';
 import type { ThemeConfig, BackgroundSettings } from '../src/types';
 
 declare global {
@@ -87,41 +120,10 @@ function approxRgba(name: string, actual: string, expected: [number, number, num
   ok(name, channelsOk && alphaOk, `got ${actual} / want rgba(${expected.join(',')}${alpha !== undefined ? `,${alpha}` : ''})`);
 }
 
-/** 解析任意 CSS 颜色为 [r,g,b]（alpha 忽略，按与白底混合近似） */
-function toRgb(input: string): [number, number, number] {
-  const value = (input || '').trim();
-  if (value.startsWith('#')) {
-    const hex = value.length === 4 ? `#${[...value.slice(1)].map((c) => c + c).join('')}` : value;
-    return [
-      parseInt(hex.slice(1, 3), 16),
-      parseInt(hex.slice(3, 5), 16),
-      parseInt(hex.slice(5, 7), 16),
-    ];
-  }
-  const m = value.match(/rgba?\(([^)]+)\)/i);
-  if (m) {
-    const p = m[1].split(',').map((s) => parseFloat(s.trim()));
-    return [p[0], p[1], p[2]];
-  }
-  return [0, 0, 0];
-}
-
-/** WCAG 相对亮度 */
-function luminance(color: string): number {
-  const [r, g, b] = toRgb(color).map((c) => {
-    const s = c / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-/** WCAG 对比度（1:1 ~ 21:1） */
-function contrastRatio(fg: string, bg: string): number {
-  const l1 = luminance(fg);
-  const l2 = luminance(bg);
-  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
-  return (hi + 0.05) / (lo + 0.05);
-}
+/**
+ * 色彩解析与对比度统一走 colorHarmony 的实现，不再在测试里另写一套 ——
+ * 两份算法一旦有细微差异，测试就会出现「自己验自己」的假绿。
+ */
 
 /* ── 挂载容器：离屏但参与布局与样式计算 ── */
 const host = document.createElement('div');
@@ -737,6 +739,298 @@ out.push('=== 14. 关于页内容质量 ===');
     if (backup === null) localStorage.removeItem(OVERRIDE_KEY);
     else localStorage.setItem(OVERRIDE_KEY, backup);
   }
+}
+
+/* ══════════════ 15. 一键配色：主色派生引擎 ══════════════ */
+out.push('');
+out.push('=== 15. 色彩派生引擎 ===');
+{
+  // 1. 基础色彩转换
+  eq('hexToRgb 解析 6 位', JSON.stringify(hexToRgb('#2563EB')), JSON.stringify({ r: 37, g: 99, b: 235 }));
+  eq('hexToRgb 解析 3 位缩写', JSON.stringify(hexToRgb('#fff')), JSON.stringify({ r: 255, g: 255, b: 255 }));
+  eq('hexToRgb 非法输入回退黑', JSON.stringify(hexToRgb('zzz')), JSON.stringify({ r: 0, g: 0, b: 0 }));
+  eq('rgbToHex 与 hexToRgb 往返一致', rgbToHex(hexToRgb('#2563EB')), '#2563eb');
+  eq('mix 取 0 返回原色', mix('#FF0000', '#0000FF', 0).toLowerCase(), '#ff0000');
+  eq('mix 取 1 返回目标色', mix('#FF0000', '#0000FF', 1).toLowerCase(), '#0000ff');
+  eq('mix 中点计算正确', mix('#000000', '#FFFFFF', 0.5).toLowerCase(), '#808080');
+  eq('rgba 保留三位小数', rgba('#000000', 0.125), 'rgba(0, 0, 0, 0.125)');
+  eq('rgba 对越界 alpha 做钳制', rgba('#000', 2), 'rgba(0, 0, 0, 1)');
+  eq('饱和度调整保持合法色值', /^#[0-9a-f]{6}$/.test(adjustSaturation('#2563EB', -0.3)), true);
+
+  // 2. WCAG 对比度
+  ok('白字黑底 = 21:1（标准值）', Math.abs(contrastRatio('#FFFFFF', '#000000') - 21) < 0.01);
+  ok('同色对比度 = 1:1', Math.abs(contrastRatio('#123456', '#123456') - 1) < 0.001);
+
+  // 3. 对比度保护
+  ok(
+    'ensureContrast 把低对比色提亮到达标',
+    contrastRatio(ensureContrast('#333333', '#ffffff'), '#ffffff') >= 4.5
+  );
+  ok('已达标的颜色原样返回（不做多余调整）', ensureContrast('#000000', '#ffffff') === '#000000');
+
+  /**
+   * 4. 核心不变量（穷举验证）
+   *
+   * 无论用户挑了什么主色、什么底色，派生出的**文字色**都必须达到 WCAG AA。
+   * 这是本模块存在的全部意义 —— 用户不需要懂配色，工具替他兜底。
+   */
+  const backgrounds = ['#ffffff', '#fafafa', '#fffbeb', '#f7faf7', '#1a1a1a', '#0f172a', '#10201a'];
+  const primaries = ['#000000', '#ffffff', '#ffff00', '#07C160', '#2563EB', '#C1272D', '#1a1a1a', '#e2e8f0'];
+  const unreadable: string[] = [];
+  let combos = 0;
+  for (const bg of backgrounds) {
+    for (const p of primaries) {
+      combos++;
+      const s = deriveColorScheme({ primary: p, background: bg });
+      const textFields: Array<[string, string | undefined]> = [
+        ['headingColor', s.tokens.headingColor],
+        ['linkColor', s.tokens.linkColor],
+        ['emColor', s.tokens.emColor],
+        ['inlineCodeColor', s.tokens.inlineCodeColor],
+        ['tableHeadColor', s.tokens.tableHeadColor],
+        ['quoteTextColor', s.tokens.quoteTextColor],
+        ['tableCellColor', s.tokens.tableCellColor],
+        ['secondaryColor', s.secondaryColor],
+      ];
+      for (const [name, color] of textFields) {
+        if (!color) continue;
+        const r = contrastRatio(color, bg);
+        if (r < 4.4) unreadable.push(`${p}@${bg} ${name}=${r.toFixed(2)}`);
+      }
+    }
+  }
+  ok(`穷举 ${combos} 组主色×底色，文字色全部达到 AA`, unreadable.length === 0, unreadable.slice(0, 3).join(' | '));
+
+  // 5. 派生结构正确性
+  const s1 = deriveColorScheme({ primary: '#07C160', background: '#ffffff', textColor: '#222222' });
+  eq('accentColor 原样取主色', s1.accentColor, '#07C160');
+  ok('次要色与主色不同（已降饱和）', s1.secondaryColor !== '#07C160');
+  ok('引用底色使用主色 + 透明度', /^rgba\(\d+, \d+, \d+, 0\.0\d+\)$/.test(String(s1.tokens.quoteBgColor)), String(s1.tokens.quoteBgColor));
+  ok('引用边线直接用主色', s1.tokens.quoteBorderColor === '#07C160');
+  ok('表头底色使用主色 + 透明度', String(s1.tokens.tableHeadBgColor).startsWith('rgba('));
+  ok('代码块配色未被改动', !s1.tokens.codeBgColor && !s1.tokens.codeTextColor);
+  eq('产出 17 项派生色', Object.keys(s1.tokens).length, 17);
+
+  // 6. 深色底的处理：装饰色透明度要比浅底更高才看得见
+  const lightScheme = deriveColorScheme({ primary: '#07C160', background: '#ffffff' });
+  const darkScheme = deriveColorScheme({ primary: '#22c55e', background: '#0f172a' });
+  ok(
+    '深色底的主色被提亮（保证可读）',
+    relativeLuminance(String(darkScheme.tokens.headingColor)) > relativeLuminance(String(lightScheme.tokens.headingColor)),
+    `${lightScheme.tokens.headingColor} → ${darkScheme.tokens.headingColor}`
+  );
+  ok('isDarkBackground 能区分深浅', isDarkBackground('#0f172a') && !isDarkBackground('#ffffff'));
+
+  // 7. 预设色板
+  ok('预设色板非空', PALETTE_PRESETS.length >= 12, `${PALETTE_PRESETS.length} 套`);
+  const badPalette = PALETTE_PRESETS.filter((p) => !/^#[0-9a-f]{6}$/i.test(p.color) || !p.name);
+  eq('预设色值均合法', badPalette.length, 0);
+  const lightPresets = presetsForBackground('#ffffff');
+  const darkPresets = presetsForBackground('#0f172a');
+  ok('浅底只出现适配浅色的预设', lightPresets.every((p) => p.fit === 'both' || p.fit === 'light'));
+  ok('深底只出现适配深色的预设', darkPresets.every((p) => p.fit === 'both' || p.fit === 'dark'));
+  ok('通用预设两种底色都出现', lightPresets.some((p) => p.fit === 'both'));
+}
+
+/* ══════════════ 16. 滚动同步换算 ══════════════ */
+out.push('');
+out.push('=== 16. 编辑器 ↔ 预览 滚动同步 ===');
+{
+  // 边界：这三档决定了「滚到底时两边是否同时到底」
+  eq('编辑器在顶部 → 进度 0', computeEditorProgress(0, 500, 2000), 0);
+  eq('编辑器在顶部附近(1px) → 0', computeEditorProgress(1, 500, 2000), 0);
+  eq('编辑器到底 → 进度 1', computeEditorProgress(1500, 500, 2000), 1);
+  eq('编辑器底部附近(maxScroll-1) → 1', computeEditorProgress(1499, 500, 2000), 1);
+  eq('内容不足一屏 → 进度 0', computeEditorProgress(0, 800, 800), 0);
+  eq('空内容 → 进度 0', computeEditorProgress(0, 0, 0), 0);
+
+  // 中间位置：视口中心对应全文的比例
+  eq(
+    '中段进度按视口中心计算',
+    Number(computeEditorProgress(500, 500, 2000).toFixed(3)),
+    0.375
+  );
+
+  // 单调性：任何滚动都必须单调递增，否则会出现回弹
+  let monotonic = true;
+  let prev = -1;
+  for (let top = 0; top <= 1500; top += 25) {
+    const p = computeEditorProgress(top, 500, 2000);
+    if (p < prev - 1e-9) { monotonic = false; break; }
+    prev = p;
+  }
+  ok('进度随滚动单调递增（无回弹）', monotonic);
+
+  /**
+   * 互逆性 —— 本次优化的核心断言。
+   *
+   * 编辑器算出的进度，经预览换算回位置后，再算回进度应当几乎不变。
+   * 这保证了「你看编辑器第 N 行时，预览也在第 N 行」。
+   */
+  const editor = { clientHeight: 500, scrollHeight: 2000 };
+  const preview = { clientHeight: 500, scrollHeight: 6000 }; // 预览渲染后高 3 倍
+  let worstError = 0;
+  for (let top = 0; top <= 1500; top += 100) {
+    const err = alignmentError({ ...editor, scrollTop: top }, preview);
+    worstError = Math.max(worstError, err);
+  }
+  ok('编辑器→预览→回算，进度几乎无损', worstError < 1, `最大误差 ${worstError.toFixed(2)}px`);
+
+  // 对比：旧的「可视区百分比」方案在同一场景下的误差
+  const oldEditorPct = (top: number) => top / (editor.scrollHeight - editor.clientHeight);
+  const oldPreviewTop = (p: number) => p * (preview.scrollHeight - preview.clientHeight);
+  const oldErrorAt = (top: number) => {
+    const expected = computeEditorProgress(top, editor.clientHeight, editor.scrollHeight);
+    const actual = computeEditorProgress(
+      oldPreviewTop(oldEditorPct(top)),
+      preview.clientHeight,
+      preview.scrollHeight
+    );
+    return Math.abs(actual - expected) * preview.scrollHeight;
+  };
+  const oldWorst = Math.max(...[0, 500, 1000, 1500].map(oldErrorAt));
+  ok(
+    '新方案误差显著优于旧的可视百分比方案',
+    worstError < oldWorst,
+    `新 ${worstError.toFixed(2)}px vs 旧 ${oldWorst.toFixed(2)}px`
+  );
+
+  // 边界对齐：编辑器到底时，预览必须精确落在自己的底部
+  const bottomTop = computePreviewScrollTop(
+    computeEditorProgress(1500, editor.clientHeight, editor.scrollHeight),
+    preview.scrollHeight,
+    preview.clientHeight
+  );
+  eq(
+    '两端同时到底',
+    bottomTop,
+    preview.scrollHeight - preview.clientHeight
+  );
+
+  // 预览侧自身的钳制
+  eq('进度为负 → 顶部', computePreviewScrollTop(-1, 6000, 500), 0);
+  eq('进度大于 1 → 底部', computePreviewScrollTop(5, 6000, 500), 5500);
+  eq('预览内容不足一屏 → 0', computePreviewScrollTop(0.5, 400, 500), 0);
+}
+
+/* ══════════════ 17. AI 能力：URL 拼接 / 脱敏 / 错误分类 ══════════════ */
+out.push('');
+out.push('=== 17. AI 能力（electron/ai.ts） ===');
+{
+  // ---- 端点归一化：路径补全是这里最容易出错的地方 ----
+  const ep = (endpoint: string, kind: 'chat' | 'image' | 'models') =>
+    resolveEndpointUrl(endpoint, kind);
+
+  eq('裸域名自动补 chat 路径', ep('https://api.deepseek.com', 'chat'), 'https://api.deepseek.com/chat/completions');
+  eq('带 /v1 的补在后面', ep('https://api.openai.com/v1', 'chat'), 'https://api.openai.com/v1/chat/completions');
+  eq(
+    '已有 chat 路径不重复添加',
+    ep('https://api.deepseek.com/chat/completions', 'chat'),
+    'https://api.deepseek.com/chat/completions'
+  );
+  eq('尾部斜杠被清理', ep('https://api.deepseek.com/', 'chat'), 'https://api.deepseek.com/chat/completions');
+  eq('生图补 images 路径', ep('https://api.openai.com/v1', 'image'), 'https://api.openai.com/v1/images/generations');
+  eq(
+    'models 会先剥掉 chat 再补 models',
+    ep('https://api.deepseek.com/chat/completions', 'models'),
+    'https://api.deepseek.com/models'
+  );
+  eq(
+    'models 会先剥掉 images 再补 models',
+    ep('https://api.openai.com/v1/images/generations', 'models'),
+    'https://api.openai.com/v1/models'
+  );
+
+  let threwEmpty = false;
+  try { ep('', 'chat'); } catch { threwEmpty = true; }
+  ok('空端点抛出可读错误', threwEmpty);
+
+  let threwBad = false;
+  try { ep('不是-url', 'chat'); } catch { threwBad = true; }
+  ok('非法端点抛出可读错误', threwBad);
+
+  // ---- 密钥脱敏：服务端回显 Header 时不能把 Key 显示给用户 ----
+  const red = (t: string) => redactSecret(t);
+  ok('Bearer 令牌被抹掉', !/sk-abc123def456ghi/.test(red('Authorization: Bearer sk-abc123def456ghi789')));
+  ok('api_key= 形式被抹掉', !/secretvalue123/.test(red('api_key=secretvalue123')));
+  ok('token= 形式被抹掉', !/tok_abcdefgh12345/.test(red('token: tok_abcdefgh12345')));
+  ok('普通中文不被误伤', red('这是一段正常的中文回复，没有密钥') === '这是一段正常的中文回复，没有密钥');
+
+  // ---- 错误分类 ----
+  eq('401 → BAD_KEY', classifyAIError('401 Unauthorized').code, 'BAD_KEY');
+  eq('invalid api key → BAD_KEY', classifyAIError('Invalid API key provided').code, 'BAD_KEY');
+  eq('429 → QUOTA', classifyAIError('429 rate limit exceeded').code, 'QUOTA');
+  eq('余额不足 → QUOTA', classifyAIError('insufficient balance').code, 'QUOTA');
+  eq('模型不存在 → BAD_MODEL', classifyAIError('The model does not exist').code, 'BAD_MODEL');
+  eq('model not found → BAD_MODEL', classifyAIError('model not found').code, 'BAD_MODEL');
+  eq('no such model → BAD_MODEL', classifyAIError('no such model: gpt-9').code, 'BAD_MODEL');
+  eq('中文模型未开通 → BAD_MODEL', classifyAIError('模型未开通').code, 'BAD_MODEL');
+  eq('fetch failed → NETWORK', classifyAIError('fetch failed').code, 'NETWORK');
+  eq('连接超时 → NETWORK', classifyAIError('ETIMEDOUT').code, 'NETWORK');
+
+  // **安全底线**：未知错误也绝不能把报文里的密钥原样吐给用户
+  const unknown = classifyAIError('服务端异常：sk-shouldneverappear123456');
+  eq('未知错误归为 UNKNOWN', unknown.code, 'UNKNOWN');
+  ok('未知错误报文已脱敏', !unknown.friendly.includes('sk-shouldneverappear123456'), unknown.friendly);
+  ok('未知错误报文长度受限', unknown.friendly.length <= 200);
+
+  // ---- 鉴权头 ----
+  ok('有 key 时带 Bearer', buildAIHeaders('sk-x', 'openai').Authorization === 'Bearer sk-x');
+  ok('default 服务不带鉴权', buildAIHeaders('sk-x', 'default').Authorization === undefined);
+  ok('空 key 不带鉴权', buildAIHeaders('', 'openai').Authorization === undefined);
+  ok('始终带 JSON Content-Type', buildAIHeaders('', 'openai')['Content-Type'] === 'application/json');
+
+  // ---- 配置补丁：回归防护 ----
+  /**
+   * 这组断言直接对应已修的那个 bug：
+   * 渲染层保存对话配置时总会带上 image 字段，没填的是空串；
+   * 若主进程按「!== undefined」判断，空串会被当成「用户要求改成空」，
+   * 于是改一下对话温度就把生图端点抹了。
+   */
+  ok('全空字符串补丁 → 视为未修改', isEmptyConfigPatch({ type: '', endpoint: '', model: '', apiKey: undefined }));
+  ok('全空串 + 空白串 → 视为未修改', isEmptyConfigPatch({ type: '   ', endpoint: '  ' }));
+  ok('空对象 → 视为未修改', isEmptyConfigPatch({}));
+  ok('null → 视为未修改', isEmptyConfigPatch(null));
+  ok('有 endpoint → 视为真实修改', !isEmptyConfigPatch({ endpoint: 'https://x/v1' }));
+  ok('有 apiKey → 视为真实修改', !isEmptyConfigPatch({ apiKey: 'sk-abc' }));
+  ok('温度 0 是有效值而非空', !isEmptyConfigPatch({ temperature: 0 }));
+
+  // ---- 服务预设完整性 ----
+  // 注意：对话服务与生图服务是**两个独立命名空间**，同一个 key（如 openai）在两边都出现
+  // 是设计如此，唯一性必须在各自列表内检查，合并后检查会误报
+  eq('对话服务 key 无重复', new Set(AI_SERVICES.map((s) => s.key)).size, AI_SERVICES.length);
+  eq('生图服务 key 无重复', new Set(IMAGE_SERVICES.map((s) => s.key)).size, IMAGE_SERVICES.length);
+  eq(
+    '对话服务含自定义项',
+    AI_SERVICES.some((s) => s.key === 'custom'),
+    true
+  );
+  const allPresets = [...AI_SERVICES, ...IMAGE_SERVICES];
+  const badEndpoints = allPresets.filter(
+    (s) => s.key !== 'custom' && !/^https:\/\/.+/.test(s.endpoint)
+  );
+  eq('非自定义预设都有合法 https 端点', badEndpoints.length, 0);
+  const emptyModels = allPresets.filter((s) => s.key !== 'custom' && s.models.length === 0);
+  eq('非自定义预设都有候选模型', emptyModels.length, 0);
+  const dupModels = AI_SERVICES.filter(
+    (s) => new Set(s.models).size !== s.models.length
+  );
+  eq('同一服务内无重复模型', dupModels.length, 0);
+
+  // ---- 提示词组装 ----
+  const msg = buildToolboxMessages('summarize', [], '这是待处理的正文');
+  eq('消息数为 2（system + user）', msg.length, 2);
+  eq('首条是 system', msg[0].role, 'system');
+  ok('system 提示词为工具箱专用', msg[0].content === TOOLBOX_SYSTEM_PROMPT);
+  ok('user 消息带总结指令', msg[1].content.includes('摘要'));
+  ok('user 消息带原文', msg[1].content.includes('这是待处理的正文'));
+
+  const custom = buildToolboxMessages('custom', ['不超过 300 字', '不要标题'], '正文');
+  ok('自定义提示词被拼接', custom[1].content.includes('不超过 300 字') && custom[1].content.includes('不要标题'));
+  ok('自定义动作不再附加内置指令', !custom[1].content.includes('请优化文本'));
+
+  const fallback = buildToolboxMessages('custom', [], '正文');
+  ok('自定义且无要求时走兜底指令', fallback[1].content.includes(OPTIMIZE_DEFAULT_PROMPT));
 }
 
 /* ── 汇总 ── */

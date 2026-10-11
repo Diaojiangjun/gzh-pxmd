@@ -11,3 +11,12 @@ coverage/
 release/
 dist-electron/
 .workbuddy/
+
+# npm 缓存（某些环境默认缓存目录不可写，会在项目里生成局部缓存）
+.npm-cache/
+.parity-*.cjs
+
+# Obsidian 插件的验证残留
+# 注意：main.js 是**有意提交**的 —— Obsidian 插件发布必须包含它，
+# 否则别人克隆仓库后无法直接加载插件。改完 src/ 后用 npm run build 重新生成。
+.parity-*.cjs

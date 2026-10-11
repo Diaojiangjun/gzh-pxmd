@@ -257,7 +257,50 @@ const SCRIPT = `(async () => {
     ok('找到「另存为自定义主题」按钮', false);
   }
 
+  // ── 一键配色：主色派生整套颜色 ──
+  {
+    const paletteGroupBtn = [...d.querySelectorAll('button')].find(
+      (b) => (b.textContent || '').trim() === '配色方案'
+    );
+    if (paletteGroupBtn) { paletteGroupBtn.click(); await wait(450); }
+    ok('切回「配色方案」分组', !!paletteGroupBtn);
+
+    const txt = () => d.textContent || '';
+    ok('存在「一键配色」区块', txt().includes('一键配色'));
+
+    // 预设色板：按钮 title 形如「微信绿 #07C160」
+    const swatches = [...d.querySelectorAll('button[title*="#"]')];
+    ok('提供预设色板', swatches.length >= 8, swatches.length + ' 个色块');
+
+    const applyBtn = [...d.querySelectorAll('button')].find((b) =>
+      (b.textContent || '').includes('应用到全部颜色')
+    );
+    ok('存在「应用到全部颜色」按钮', !!applyBtn);
+
+    if (swatches.length > 0 && applyBtn) {
+      // 先点一个预设色块，确认取色器跟随
+      swatches[swatches.length - 1].click();
+      await wait(300);
+
+      const colorsBefore = [...d.querySelectorAll('input[type="color"]')].map((i) => i.value).join(',');
+      applyBtn.click();
+      await wait(500);
+      const colorsAfter = [...d.querySelectorAll('input[type="color"]')].map((i) => i.value).join(',');
+
+      ok('应用后派生色被写入主题', colorsBefore !== colorsAfter);
+      ok('给出「已应用」反馈', txt().includes('已应用到全部颜色'));
+    }
+
+    // 元素配色分组应被写入派生色（取不到就只验证分组可切换）
+    const elColorBtn = [...d.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === '元素配色');
+    if (elColorBtn) { elColorBtn.click(); await wait(420); }
+    ok('「元素配色」分组可正常切换', txt().includes('主要颜色') || txt().includes('H1'));
+  }
+
   mark('groups+live-done');
+  // 滚动联动开关应常驻在预览面板工具栏
+  ok('预览面板有「滚动联动」开关', (document.body.textContent || '').includes('滚动联动'));
+
   // ── 5. 开关循环（hook 顺序稳定性） ──
   // ⚠️ 关闭按钮必须每轮重新查询：弹窗卸载后旧引用已脱离文档，对其 click() 无效
   for (let i = 0; i < 3; i++) {
