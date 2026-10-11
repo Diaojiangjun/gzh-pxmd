@@ -16,9 +16,11 @@ import {
   Sun,
   EyeOff,
   AlertTriangle,
+  Link2,
 } from 'lucide-react';
 import { PreviewMode, ThemeConfig, BackgroundSettings } from '../types';
 import { calculateArticleStats, BlockSyntaxError } from '../services/gzhCompiler';
+import { computePreviewScrollTop } from '../utils/scrollSync';
 
 interface PreviewPanelProps {
   html: string;
@@ -33,10 +35,23 @@ interface PreviewPanelProps {
   convertLinksToFootnotes: boolean;
   onToggleFootnotes: (value: boolean) => void;
   blockErrors?: BlockSyntaxError[];
+  /** 编辑器滚动是否带动预览 */
+  scrollSyncEnabled?: boolean;
+  onToggleScrollSync?: () => void;
 }
 
 export interface PreviewPanelRef {
-  scrollToPercentage: (percentage: number) => void;
+  /**
+   * 按「内容进度」对齐滚动位置。
+   *
+   * progress 的定义是 **视口中心在全文中的位置比例**（0~1），而不是
+   * 「可视区滚动了百分之多少」。两者差别很大：
+   *  - 可视比例在两边内容密度不同时会系统性漂移（预览渲染后通常是编辑器的 2~3 倍高）；
+   *  - 内容进度是相对全文的，所以「滚到底」时两边会自然同时到底。
+   */
+  scrollToProgress: (progress: number, smooth?: boolean) => void;
+  /** 当前预览内容是否可滚动（不可滚动时同步无意义） */
+  canScroll: () => boolean;
 }
 
 export const PreviewPanel = forwardRef<PreviewPanelRef, PreviewPanelProps>(
@@ -54,6 +69,8 @@ export const PreviewPanel = forwardRef<PreviewPanelRef, PreviewPanelProps>(
       convertLinksToFootnotes,
       onToggleFootnotes,
       blockErrors = [],
+      scrollSyncEnabled = true,
+      onToggleScrollSync,
     },
     ref
   ) => {
@@ -62,16 +79,62 @@ export const PreviewPanel = forwardRef<PreviewPanelRef, PreviewPanelProps>(
     const [hidePhoneFrame, setHidePhoneFrame] = useState(false);
     const stats = useMemo(() => calculateArticleStats(markdown), [markdown]);
 
+    /**
+     * 最近一次同步进度。
+     *
+     * 预览内容会「事后变高」——图片懒加载、KaTeX 公式异步渲染、行高重排，
+     * 这些都发生在同步之后，导致滚动位置悄悄跑偏。记下进度，内容高度一变就重新对齐。
+     */
+    const lastProgressRef = useRef(0);
+
+    const applyProgress = React.useCallback((progress: number, smooth = false) => {
+      const el = scrollContainerRef.current;
+      if (!el) return;
+      const { scrollHeight, clientHeight } = el;
+      const maxScroll = scrollHeight - clientHeight;
+
+      if (maxScroll <= 0) {
+        el.scrollTop = 0;
+        return;
+      }
+
+      const target = computePreviewScrollTop(progress, scrollHeight, clientHeight);
+      if (Math.abs(el.scrollTop - target) < 0.5) return; // 已到位，不打扰
+      el.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' });
+    }, []);
+
     useImperativeHandle(ref, () => ({
-      scrollToPercentage: (percentage: number) => {
-        if (!scrollContainerRef.current) return;
-        const { scrollHeight, clientHeight } = scrollContainerRef.current;
-        const maxScroll = scrollHeight - clientHeight;
-        if (maxScroll > 0) {
-          scrollContainerRef.current.scrollTop = maxScroll * percentage;
-        }
+      scrollToProgress: (progress: number, smooth?: boolean) => {
+        lastProgressRef.current = progress;
+        applyProgress(progress, smooth);
       },
-    }));
+      canScroll: () => {
+        const el = scrollContainerRef.current;
+        return !!el && el.scrollHeight > el.clientHeight + 4;
+      },
+    }), [applyProgress]);
+
+    // 切换预览样机（手机 / 平板 / 桌面）后容器高度全变，需要按当前进度重新对齐
+    React.useEffect(() => {
+      applyProgress(lastProgressRef.current);
+    }, [previewMode, applyProgress]);
+
+    // 内容高度变化后重新对齐（图片加载完成 / 公式渲染完成 / 预览重排）
+    React.useEffect(() => {
+      const el = scrollContainerRef.current;
+      const inner = el?.firstElementChild as HTMLElement | null;
+      if (!el || !inner || typeof ResizeObserver === 'undefined') return;
+
+      let lastHeight = inner.getBoundingClientRect().height;
+      const ro = new ResizeObserver(() => {
+        const h = inner.getBoundingClientRect().height;
+        if (Math.abs(h - lastHeight) < 4) return;
+        lastHeight = h;
+        applyProgress(lastProgressRef.current);
+      });
+      ro.observe(inner);
+      return () => ro.disconnect();
+    }, [applyProgress, html, previewMode]);
 
     const scrollToTop = () => {
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -168,6 +231,24 @@ export const PreviewPanel = forwardRef<PreviewPanelRef, PreviewPanelProps>(
                 }`}
               />
               <span className="hidden sm:inline">外链脚注</span>
+            </button>
+
+            {/* 编辑器滚动联动开关 */}
+            <button
+              onClick={onToggleScrollSync}
+              className={`flex items-center space-x-1 px-2 py-1 rounded-md border text-[11px] font-medium transition-colors ${
+                scrollSyncEnabled
+                  ? 'bg-[#F0FAF5] border-[#07C160]/30 text-[#07C160]'
+                  : 'bg-white border-[#E2E8F0] text-[#94A3B8]'
+              }`}
+              title={
+                scrollSyncEnabled
+                  ? '滚动联动已开启：编辑器滚动时预览跟随（点击关闭）'
+                  : '滚动联动已关闭：两边各自独立滚动（点击开启）'
+              }
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">滚动联动</span>
             </button>
 
             {/* 微信深色模式预览开关 */}

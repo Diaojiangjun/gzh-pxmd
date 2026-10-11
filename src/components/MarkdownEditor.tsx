@@ -1,12 +1,13 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { ImageAttachment } from '../types';
 import { cleanDataUri, optimizeStickerFile } from '../utils/imageOptimizer';
+import { computeEditorProgress } from '../utils/scrollSync';
 import { Search, ArrowUp, ArrowDown, X, CaseSensitive } from 'lucide-react';
 
 interface MarkdownEditorProps {
   content: string;
   onChange: (value: string) => void;
-  onScrollSync?: (percentage: number) => void;
+  onScrollSync?: (progress: number) => void;
   onImagePasted?: (image: ImageAttachment) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   activeThemeName?: string;
@@ -33,6 +34,8 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 }) => {
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  /** 滚动同步的 rAF 句柄：用于合并高频 scroll 事件 */
+  const syncRafRef = useRef<number | null>(null);
 
   // ---- 搜索替换状态 ----
   const [showSearch, setShowSearch] = useState(false);
@@ -128,16 +131,38 @@ export const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
 
   // Synchronize scroll between textarea and line numbers gutter + preview
   const handleScroll = () => {
-    if (!textareaRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = textareaRef.current;
+    const ta = textareaRef.current;
+    if (!ta) return;
+
+    // 行号栏是纯视觉跟随，必须每帧都跟（它只是赋值，没有性能压力）
     if (lineNumbersRef.current) {
-      lineNumbersRef.current.scrollTop = scrollTop;
+      lineNumbersRef.current.scrollTop = ta.scrollTop;
     }
-    const maxScroll = scrollHeight - clientHeight;
-    if (maxScroll > 0 && onScrollSync) {
-      onScrollSync(scrollTop / maxScroll);
-    }
+
+    if (!onScrollSync) return;
+
+    // 预览同步走 rAF 合并：拖动滚动条时 scroll 事件每秒可达上百次，
+    // 每次都去改预览的 scrollTop 会让两边互相拖累，出现明显掉帧。
+    if (syncRafRef.current !== null) return;
+    syncRafRef.current = requestAnimationFrame(() => {
+      syncRafRef.current = null;
+      const el = textareaRef.current;
+      if (!el) return;
+
+      // 内容进度 = 视口中心在全文中的位置比例（换算与边界处理见 utils/scrollSync）
+      onScrollSync(
+        computeEditorProgress(ta.scrollTop, ta.clientHeight, ta.scrollHeight)
+      );
+    });
   };
+
+  // 卸载时取消未执行的 rAF，避免对已卸载组件发起同步
+  React.useEffect(
+    () => () => {
+      if (syncRafRef.current !== null) cancelAnimationFrame(syncRafRef.current);
+    },
+    []
+  );
 
   // Handle Tab key + Markdown formatting shortcuts
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

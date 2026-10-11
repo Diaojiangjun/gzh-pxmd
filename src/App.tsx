@@ -19,22 +19,98 @@ import { TopNavBar } from './components/TopNavBar';
 import { EditorToolbar } from './components/EditorToolbar';
 import { MarkdownEditor } from './components/MarkdownEditor';
 import { PreviewPanel, PreviewPanelRef } from './components/PreviewPanel';
-import { ThemeDesignerModal } from './components/ThemeDesignerModal';
-import { ThemeManagerModal } from './components/ThemeManagerModal';
-import { ComponentDrawer } from './components/ComponentDrawer';
-import { BackgroundModal } from './components/BackgroundModal';
-import { StickerModal } from './components/StickerModal';
-import { ImageManagerModal } from './components/ImageManagerModal';
-import { PresetModal } from './components/PresetModal';
-import { AboutModal } from './components/AboutModal';
-import { ArticleManagerDrawer } from './components/ArticleManagerDrawer';
-import { HistoryModal } from './components/HistoryModal';
-import { PreflightModal } from './components/PreflightModal';
-import { CoverGeneratorModal } from './components/CoverGeneratorModal';
-import { BackupModal } from './components/BackupModal';
+const ThemeDesignerModal = lazyModal(
+  () => import('./components/ThemeDesignerModal').then((m) => ({ default: m.ThemeDesignerModal })),
+  'ThemeDesignerModal'
+);
+const ThemeManagerModal = lazyModal(
+  () => import('./components/ThemeManagerModal').then((m) => ({ default: m.ThemeManagerModal })),
+  'ThemeManagerModal'
+);
+const ComponentDrawer = lazyModal(
+  () => import('./components/ComponentDrawer').then((m) => ({ default: m.ComponentDrawer })),
+  'ComponentDrawer'
+);
+const BackgroundModal = lazyModal(
+  () => import('./components/BackgroundModal').then((m) => ({ default: m.BackgroundModal })),
+  'BackgroundModal'
+);
+const StickerModal = lazyModal(
+  () => import('./components/StickerModal').then((m) => ({ default: m.StickerModal })),
+  'StickerModal'
+);
+const ImageManagerModal = lazyModal(
+  () => import('./components/ImageManagerModal').then((m) => ({ default: m.ImageManagerModal })),
+  'ImageManagerModal'
+);
+const PresetModal = lazyModal(
+  () => import('./components/PresetModal').then((m) => ({ default: m.PresetModal })),
+  'PresetModal'
+);
+const AboutModal = lazyModal(
+  () => import('./components/AboutModal').then((m) => ({ default: m.AboutModal })),
+  'AboutModal'
+);
+const ArticleManagerDrawer = lazyModal(
+  () => import('./components/ArticleManagerDrawer').then((m) => ({ default: m.ArticleManagerDrawer })),
+  'ArticleManagerDrawer'
+);
+const HistoryModal = lazyModal(
+  () => import('./components/HistoryModal').then((m) => ({ default: m.HistoryModal })),
+  'HistoryModal'
+);
+const PreflightModal = lazyModal(
+  () => import('./components/PreflightModal').then((m) => ({ default: m.PreflightModal })),
+  'PreflightModal'
+);
+const CoverGeneratorModal = lazyModal(
+  () => import('./components/CoverGeneratorModal').then((m) => ({ default: m.CoverGeneratorModal })),
+  'CoverGeneratorModal'
+);
+const BackupModal = lazyModal(
+  () => import('./components/BackupModal').then((m) => ({ default: m.BackupModal })),
+  'BackupModal'
+);
 import { AIPanel, ApplyTarget } from './components/AIPanel';
-import { ImageHostModal } from './components/ImageHostModal';
-import { StorageModeModal } from './components/StorageModeModal';
+
+/**
+ * 弹窗懒加载门卫
+ *
+ * 实测：应用首屏要请求 61 个模块 / 683KB JS，其中 15 个弹窗组件首屏根本用不到，
+ * 开发模式下每个模块都要单独编译，直接决定了启动白屏有多久。
+ *
+ * 关键点是 `props.isOpen === false` 时直接 return null —— React.lazy 只要**被渲染**
+ * 就会触发模块加载，所以「靠组件内部 return null 隐藏」是不够的，必须让父组件
+ * 根本不渲染它。这样既省掉首屏体积，调用处的写法也完全不用改。
+ *
+ * 代价：弹窗关闭即卸载，内部临时状态（搜索词、未保存的草稿）不再保留 ——
+ * 这对弹窗类交互而言通常是期望行为，重新打开就是干净状态。
+ */
+function lazyModal<P extends object>(
+  loader: () => Promise<{ default: React.ComponentType<P> }>,
+  displayName: string
+): React.FC<P> {
+  const Comp = React.lazy(loader);
+  const Wrapped: React.FC<P> = (props) => {
+    if ((props as { isOpen?: boolean }).isOpen === false) return null;
+    return (
+      <React.Suspense fallback={null}>
+        <Comp {...props} />
+      </React.Suspense>
+    );
+  };
+  Wrapped.displayName = displayName;
+  return Wrapped;
+}
+
+const ImageHostModal = lazyModal(
+  () => import('./components/ImageHostModal').then((m) => ({ default: m.ImageHostModal })),
+  'ImageHostModal'
+);
+const StorageModeModal = lazyModal(
+  () => import('./components/StorageModeModal').then((m) => ({ default: m.StorageModeModal })),
+  'StorageModeModal'
+);
 
 import {
   ThemeConfig,
@@ -217,6 +293,8 @@ export default function App() {
   const [presets, setPresets] = useState<LocalPreset[]>(boot.presets);
 
   const [previewMode, setPreviewMode] = useState<PreviewMode>('default');
+  /** 编辑器滚动是否带动预览 */
+  const [scrollSyncEnabled, setScrollSyncEnabled] = useState(true);
 
   // 主工作区布局：左右分栏(默认) / 上下分栏 / 专注编辑 / 专注预览 + 可拖拽分割比例
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('horizontal');
@@ -554,9 +632,15 @@ export default function App() {
   // 自定义语法块 :::xxx 的轻量体检（未闭合 / 块名不支持），仅用于提示
   const blockErrors = useMemo(() => validateCustomBlocks(markdown), [markdown]);
 
-  // Synchronous scroll from editor to preview
-  const handleScrollSync = (percentage: number) => {
-    previewRef.current?.scrollToPercentage(percentage);
+  /**
+   * 编辑器 → 预览 的滚动同步。
+   *
+   * progress 由 MarkdownEditor 计算，含义是「视口中心在全文中的位置比例」，
+   * 而非「可视区滚动了百分之多少」—— 后者在两边内容密度不同时会系统性漂移。
+   */
+  const handleScrollSync = (progress: number) => {
+    if (!scrollSyncEnabled) return;
+    previewRef.current?.scrollToProgress(progress);
   };
 
   // Insert markdown at cursor
@@ -1461,6 +1545,8 @@ export default function App() {
         convertLinksToFootnotes={convertLinksToFootnotes}
         onToggleFootnotes={handleToggleFootnotes}
         blockErrors={blockErrors}
+        scrollSyncEnabled={scrollSyncEnabled}
+        onToggleScrollSync={() => setScrollSyncEnabled((v) => !v)}
       />
     </div>
   );
