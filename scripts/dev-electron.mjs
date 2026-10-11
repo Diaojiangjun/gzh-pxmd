@@ -116,6 +116,55 @@ try {
   process.exit(1);
 }
 
+/**
+ * 预热 vite：把「依赖预打包 + 入口编译」提前到窗口显示之前做完
+ *
+ * vite 的 optimizeDeps（把 react / react-dom / lucide-react 这类 CJS 依赖
+ * 预打包成 ESM）是**惰性触发**的 —— 只有浏览器真的请求到某个模块才会启动。
+ * 如果放任 Electron 去触发，窗口就会先亮出来再白屏数秒（实测首次可长达 20s+）。
+ *
+ * 这里主动请求关键模块，等 vite 把预打包跑完，再开窗口。
+ * 注意：dev-electron 只在真正打开窗口前多花几秒，而窗口一出现就是可用状态。
+ */
+async function warmupVite(baseUrl, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  const paths = ['/@vite/client', '/src/main.tsx', '/src/App.tsx', '/src/index.css'];
+
+  for (const p of paths) {
+    if (Date.now() > deadline) break;
+    try {
+      const res = await fetch(baseUrl + p);
+      await res.arrayBuffer(); // 必须读完，否则连接不释放，预打包不会被触发
+      if (!res.ok) console.warn(`[dev-electron] 预热 ${p} 返回 ${res.status}`);
+    } catch {
+      // 预热失败不影响启动，交给 Electron 自己重试
+    }
+  }
+
+  // 预打包在服务端异步进行，请求返回不代表已完成；
+  // 再等待一小段时间让 esbuild 把产物落盘（观察到稳定后提前结束）
+  const settleUntil = Date.now() + 6000;
+  let stableCount = 0;
+  while (Date.now() < settleUntil && stableCount < 3) {
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${baseUrl}/src/main.tsx`);
+      await res.arrayBuffer();
+    } catch {
+      stableCount = 0;
+    }
+    // 单次编译耗时稳定在 300ms 内，认为预热完成
+    if (Date.now() - t0 < 300) stableCount += 1;
+    else stableCount = 0;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+console.log('[dev-electron] 预热 vite（依赖预打包 + 入口编译）...');
+const warmupStart = Date.now();
+await warmupVite(DEV_URL);
+console.log(`[dev-electron] 预热完成，耗时 ${Date.now() - warmupStart}ms`);
+
 // 4. 启动 Electron 桌面窗口
 viteReady = true;
 launchElectron();
