@@ -14,11 +14,13 @@ import {
   Sparkles,
   Info,
   LayoutGrid,
+  Wand2,
 } from 'lucide-react';
 import { ThemeConfig, BackgroundSettings, HeadingStyle } from '../types';
 import { DEFAULT_THEMES } from '../data/defaultData';
 import { compileWeChatMarkdown } from '../services/gzhCompiler';
 import { resolveTokens, TOKEN_PRESETS } from '../services/themeTokens';
+import { deriveColorScheme, presetsForBackground, mix } from '../services/colorHarmony';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { SAMPLE_MARKDOWN } from '../data/sampleMarkdown';
 
@@ -308,6 +310,9 @@ export const ThemeDesignerModal: React.FC<ThemeDesignerModalProps> = ({
   const [group, setGroup] = React.useState<GroupId>('palette');
   const [previewSource, setPreviewSource] = React.useState<'article' | 'sample'>('sample');
   const [saved, setSaved] = React.useState(false);
+  // 一键配色：待应用的主色 + 应用后的短暂反馈
+  const [schemeColor, setSchemeColor] = React.useState(theme.accentColor);
+  const [schemeApplied, setSchemeApplied] = React.useState(false);
 
   useEscapeKey(isOpen, onClose);
 
@@ -351,6 +356,27 @@ export const ThemeDesignerModal: React.FC<ThemeDesignerModalProps> = ({
     patchTokens(TOKEN_PRESETS[key].tokens);
   };
 
+  /**
+   * 一键配色：把选中的主色派生成一整套颜色后写入主题。
+   *
+   * 刻意做成「先选后应用」而不是拖动取色器就实时重算 ——
+   * 实时重算会在用户还没调完时就覆盖掉已手工微调过的派生色。
+   */
+  const handleApplyScheme = (color: string) => {
+    const scheme = deriveColorScheme({
+      primary: color,
+      background: theme.backgroundColor,
+      textColor: theme.primaryColor,
+    });
+    onUpdate({
+      accentColor: scheme.accentColor,
+      secondaryColor: scheme.secondaryColor,
+      tokens: { ...(theme.tokens || {}), ...scheme.tokens },
+    });
+    setSchemeApplied(true);
+    setTimeout(() => setSchemeApplied(false), 1800);
+  };
+
   const handleSaveAsCustom = () => {
     onSaveAsCustom({
       ...theme,
@@ -388,6 +414,59 @@ export const ThemeDesignerModal: React.FC<ThemeDesignerModalProps> = ({
                 onChange={(v) => onUpdate({ backgroundColor: v || '#ffffff' })}
               />
             </Field>
+
+            {/* ── 一键配色：由主色派生整套颜色 ── */}
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <div className="text-[11px] font-bold text-slate-800 mb-1">一键配色</div>
+              <p className="text-[10px] text-slate-400 mb-2.5 leading-relaxed">
+                选一个主色，自动派生标题、链接、引用、表格等 20 项颜色，并自动保证在当前底色上可读。
+              </p>
+
+              {/* 实时预览：色块 + 元素样张 */}
+              <div className="rounded-lg border border-slate-200 overflow-hidden mb-2">
+                <div className="h-8 transition-colors" style={{ backgroundColor: schemeColor }} />
+                <div
+                  className="px-2.5 py-2 flex items-center gap-3 text-[10px] transition-colors"
+                  style={{ backgroundColor: theme.backgroundColor }}
+                >
+                  <span style={{ color: schemeColor, fontWeight: 700 }}>标题</span>
+                  <span style={{ color: schemeColor, textDecoration: 'underline' }}>链接</span>
+                  <span style={{ color: mix(schemeColor, theme.backgroundColor, 0.45) }}>图注文字</span>
+                </div>
+              </div>
+
+              <ColorControl value={schemeColor} fallback="#07C160" onChange={setSchemeColor} />
+
+              {/* 预设色板：只显示适合当前底色的，避免用户挑到看不清的 */}
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {presetsForBackground(theme.backgroundColor).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    title={`${p.name} ${p.color}`}
+                    onClick={() => setSchemeColor(p.color)}
+                    className={`w-6 h-6 rounded-md transition-transform hover:scale-110 ${
+                      schemeColor.toLowerCase() === p.color.toLowerCase()
+                        ? 'border-2 border-slate-800 ring-1 ring-slate-300'
+                        : 'border border-white shadow-xs'
+                    }`}
+                    style={{ backgroundColor: p.color }}
+                  />
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleApplyScheme(schemeColor)}
+                className="mt-2.5 w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all"
+              >
+                {schemeApplied ? <Check className="w-3.5 h-3.5" /> : <Wand2 className="w-3.5 h-3.5" />}
+                {schemeApplied ? '已应用到全部颜色' : '应用到全部颜色'}
+              </button>
+              <p className="text-[10px] text-amber-600 mt-1.5 leading-relaxed">
+                会覆盖标题、链接、引用、表格等派生色；代码块配色与文章底色不受影响。
+              </p>
+            </div>
 
             <div className="mt-5 pt-4 border-t border-slate-100">
               <div className="text-[11px] font-bold text-slate-800 mb-2">风格预设</div>

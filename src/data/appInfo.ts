@@ -123,6 +123,7 @@ export type ContactType =
   | 'email'
   | 'github'
   | 'website'
+  | 'blog'
   | 'bilibili'
   | 'x'
   | 'custom';
