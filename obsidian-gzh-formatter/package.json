@@ -1,0 +1,23 @@
+{
+  "name": "obsidian-gzh-formatter",
+  "version": "1.0.0",
+  "description": "Obsidian 插件：公众号排版助手（与 gzh-gemimi 共用同一套排版引擎）",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "sync": "node ../scripts/sync-core.mjs"
+  },
+  "keywords": ["obsidian-plugin", "wechat", "markdown", "typography"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.24.2",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "marked": "^18.0.11"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "gzh-formatter",
+  "name": "公众号排版助手",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "在 Obsidian 里用 28 套主题排版笔记，一键复制到微信公众号。离线运行，Markdown 与排版块语法全兼容。",
+  "author": "Diaojiangjun",
+  "authorUrl": "https://github.com/diaojiangjun",
+  "isDesktopOnly": false
+}

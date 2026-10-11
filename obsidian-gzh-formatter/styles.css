@@ -1,0 +1,70 @@
+/* 侧栏预览的样式。刻意保持克制 —— 这是预览台，不是第二个编辑器。 */
+
+.gzh-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 16px 4px;
+  margin: 0;
+}
+
+.gzh-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  position: sticky;
+  top: 0;
+  background: var(--background-primary);
+  z-index: 2;
+}
+
+.gzh-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gzh-status {
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.gzh-status-warn {
+  color: var(--text-warning, #c8860d);
+}
+
+.gzh-body {
+  padding: 16px 14px 60px;
+  /* 预览里的排版结果本身已经内联了全部样式，这里只做边距收敛 */
+  overflow-x: hidden;
+}
+
+.gzh-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.gzh-body pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.gzh-body table {
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+.gzh-slider-label {
+  margin-left: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
