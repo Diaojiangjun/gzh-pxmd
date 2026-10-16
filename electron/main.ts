@@ -721,7 +721,7 @@ const IMAGE_HOST_PATH = () => path.join(app.getPath('userData'), 'image-host-con
 const DEFAULT_IMAGE_HOST: ImageHostConfig = {
   type: 'none',
   github: { repo: '', token: '', branch: 'main', path: 'images' },
-  custom: { url: '', method: 'POST', fieldName: 'file', headers: '', responsePath: 'url' },
+  custom: { url: '', method: 'POST', fieldName: 'file', headers: '', responsePath: 'url', domain: '', extraQuery: '' },
   s3: { endpoint: '', region: 'auto', bucket: '', accessKey: '', secretKey: '', domain: '' },
   aliyun: { accessKeyId: '', accessKeySecret: '', bucket: '', region: 'oss-cn-hangzhou', domain: '' },
   tencent: { secretId: '', secretKey: '', bucket: '', region: 'ap-guangzhou', domain: '' },

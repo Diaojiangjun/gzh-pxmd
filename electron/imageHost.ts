@@ -15,7 +15,24 @@ export type ImageHostType = 'none' | 'github' | 'custom' | 's3' | 'aliyun' | 'te
 export interface ImageHostConfig {
   type: ImageHostType;
   github?: { repo: string; token: string; branch: string; path: string };
-  custom?: { url: string; method: string; fieldName: string; headers: string; responsePath: string };
+  custom?: {
+    url: string;
+    method: string;
+    fieldName: string;
+    headers: string;
+    responsePath: string;
+    /**
+     * 图片访问域名。留空则自动取「上传接口 URL」的 origin。
+     * 部分图床（如自建 / PicGo）返回的是 `/file/xxx.jpg` 这类相对路径，
+     * 公众号里会直接裂图，必须补成绝对地址。
+     */
+    domain: string;
+    /**
+     * 部分图床需要追加查询参数（如 `returnFormat=full`）才会返回完整链接。
+     * 留空则不追加；绝对化逻辑会自动处理相对路径，所以多数情况无需填写。
+     */
+    extraQuery: string;
+  };
   s3?: { endpoint: string; region: string; bucket: string; accessKey: string; secretKey: string; domain: string };
   aliyun?: { accessKeyId: string; accessKeySecret: string; bucket: string; region: string; domain: string };
   tencent?: { secretId: string; secretKey: string; bucket: string; region: string; domain: string };
@@ -57,13 +74,98 @@ function sha1Hex(data: string): string {
   return crypto.createHash('sha1').update(data, 'utf8').digest('hex');
 }
 
-/** 按点分路径从对象中取值，如 "data.url" */
-function getByPath(obj: any, path: string): string | undefined {
+/**
+ * 按点分路径从对象中取值，如 "data.url"。
+ *
+ * 支持数组下标：响应顶层是数组时，`0.src` 等价于 `json[0].src`。
+ * 各家图床的响应结构差异很大 —— 有的返回对象 `{data:{url}}`，
+ * 有的直接返回数组 `[{src:"..."}]`（上传后返回文件数组的那种）。
+ * 只支持对象路径的话，用户遇到数组结构就只能干瞪眼。
+ */
+export function getByPath(obj: any, path: string): string | undefined {
   if (!path) return undefined;
   const value = path
     .split('.')
+    // 去掉 `[0]` / `[0][1]` 写法里的括号，两种语法归一化成点分
+    .map((seg) => seg.replace(/\[(\d+)\]/g, '.$1'))
+    .join('.')
+    .split('.')
+    .filter((seg) => seg !== '')
     .reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * 把图床返回的图片路径补成可直接用于公众号的绝对地址。
+ *
+ * 为什么必须做这一步：不少图床默认只返回 `/file/xxx.jpg` 这种**相对路径**
+ * （有的需要加 `?returnFormat=full` 才给完整链接，但那是图床自己的行为，
+ * 我们不该要求用户去猜）。公众号编辑器拿到相对路径，浏览器会按公众号域名去
+ * 请求 `/file/xxx.jpg` —— 结果必然是裂图，而且预览里看正常，粘过去才发现，
+ * 很难排查。
+ *
+ * 补全优先级：
+ *  1. 已经是 http(s) 绝对地址 → 原样返回
+ *  2. 配置了「图片域名」→ 用它
+ *  3. 否则取上传接口 URL 的 origin（多数图床与文件访问同源）
+ */
+export function absolutizeUrl(
+  rawUrl: string,
+  opts: { domain?: string; uploadUrl?: string }
+): string {
+  const raw = (rawUrl || '').trim();
+  if (!raw) return '';
+
+  // 已是绝对地址（http/https），无需处理
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  // 协议相对地址（//cdn.example.com/a.jpg）→ 继承上传地址的协议
+  if (raw.startsWith('//')) {
+    const scheme = safeProtocol(opts.uploadUrl || '');
+    return `${scheme}${raw}`;
+  }
+
+  // 拼出基准：优先自定义域名，其次上传地址的 origin
+  let base = (opts.domain || '').trim();
+  if (!base) base = safeOrigin(opts.uploadUrl || '') || '';
+  if (!base) {
+    // 兜底：不给域名总比给个错的强，但要让调用方知道没补成
+    return raw;
+  }
+  base = base.replace(/\/+$/, '');
+
+  return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
+}
+
+/** 取 URL 的 origin，非法输入返回空串而不是抛错 */
+function safeOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+}
+
+/** 取 URL 的协议（含尾冒号），非法输入按 https 处理 —— 公众号只收 https */
+function safeProtocol(url: string): string {
+  try {
+    return new URL(url).protocol;
+  } catch {
+    return 'https:';
+  }
+}
+
+/**
+ * 给上传地址追加查询参数。
+ *
+ * 存在的意义：部分图床（如某些自建服务）默认只返回相对路径，加
+ * `?returnFormat=full` 才返回完整链接。用户不该为此去手动改 URL 字符串，
+ * 而且参数和地址写在一起，删参数时容易把地址也改坏。
+ */
+export function appendQuery(url: string, extraQuery: string): string {
+  const q = (extraQuery || '').trim().replace(/^[?&]+/, '').replace(/&+$/, '');
+  if (!q) return url;
+  return url + (url.includes('?') ? '&' : '?') + q;
 }
 
 function randomFileName(ext: string): string {
@@ -142,7 +244,10 @@ async function uploadToCustom(cfg: ImageHostConfig, data: UploadImageData): Prom
     }
   }
 
-  const res = await fetch(cu.url, {
+  // 部分图床需要追加参数才返回完整链接（不填也能用 —— 下面会自动补全相对路径）
+  const requestUrl = appendQuery(cu.url, cu.extraQuery || '');
+
+  const res = await fetch(requestUrl, {
     method: (cu.method || 'POST').toUpperCase(),
     headers,
     body: form,
@@ -157,9 +262,24 @@ async function uploadToCustom(cfg: ImageHostConfig, data: UploadImageData): Prom
   }
   if (!res.ok) throw new Error(`上传失败 HTTP ${res.status}：${text.slice(0, 200)}`);
 
-  const url = getByPath(json, cu.responsePath || 'url') || getByPath(json, 'data.url');
-  if (!url) throw new Error(`未能从响应中解析图片 URL，请检查「URL 字段路径」（当前：${cu.responsePath || 'url'}）`);
-  return url;
+  const rawPath = cu.responsePath || 'url';
+  const found = getByPath(json, rawPath) || getByPath(json, 'data.url') || getByPath(json, 'url');
+  if (!found) {
+    throw new Error(
+      `未能从响应中解析图片 URL，请检查「URL 字段路径」（当前：${rawPath}）。` +
+        `响应结构：${text.slice(0, 200)}`
+    );
+  }
+
+  // 关键：补成绝对地址 —— 相对路径贴进公众号必然裂图
+  const finalUrl = absolutizeUrl(found, { domain: cu.domain, uploadUrl: cu.url });
+  if (!/^https?:\/\//i.test(finalUrl)) {
+    throw new Error(
+      `图床返回的是相对路径「${found}」，但无法确定域名。` +
+        `请在「图片域名」里填写（如 ${safeOrigin(cu.url) || 'https://你的域名'}）。`
+    );
+  }
+  return finalUrl;
 }
 
 async function uploadToS3(cfg: ImageHostConfig, data: UploadImageData): Promise<string> {

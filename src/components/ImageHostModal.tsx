@@ -8,7 +8,7 @@ type HostType = ImageHostConfig['type'];
 /** 各图床需要填写的字段（secret 字段会显示为密码框并打码返回） */
 const FIELD_GROUPS: Record<
   string,
-  Array<{ key: string; label: string; placeholder?: string; secret?: boolean }>
+  Array<{ key: string; label: string; placeholder?: string; secret?: boolean; hint?: string }>
 > = {
   github: [
     { key: 'repo', label: '仓库 (owner/repo)', placeholder: 'username/repo' },
@@ -21,7 +21,24 @@ const FIELD_GROUPS: Record<
     { key: 'method', label: '请求方法', placeholder: 'POST' },
     { key: 'fieldName', label: '文件字段名', placeholder: 'file' },
     { key: 'headers', label: '额外请求头 (JSON)', placeholder: '{"Authorization":"Bearer xxx"}' },
-    { key: 'responsePath', label: 'URL 字段路径', placeholder: 'data.url' },
+    {
+      key: 'responsePath',
+      label: 'URL 字段路径',
+      placeholder: 'data.url',
+      hint: '响应 JSON 里图片链接的位置。支持 data.url、0.src（顶层数组第一项）、src 等写法。',
+    },
+    {
+      key: 'domain',
+      label: '图片域名（可选）',
+      placeholder: 'https://cdn.example.com',
+      hint: '图床若只返回 /file/xxx.jpg 这类相对路径，会用它补全。留空则自动取上传接口的域名。',
+    },
+    {
+      key: 'extraQuery',
+      label: '附加查询参数（可选）',
+      placeholder: 'returnFormat=full',
+      hint: '部分图床需要加参数才返回完整链接，如 returnFormat=full。一般留空即可 —— 相对路径会自动补全。',
+    },
   ],
   s3: [
     { key: 'endpoint', label: 'Endpoint', placeholder: 'https://s3.amazonaws.com' },
@@ -50,7 +67,7 @@ const FIELD_GROUPS: Record<
 const EMPTY: ImageHostConfig = {
   type: 'none',
   github: { repo: '', token: '', branch: 'main', path: 'images' },
-  custom: { url: '', method: 'POST', fieldName: 'file', headers: '', responsePath: 'url' },
+  custom: { url: '', method: 'POST', fieldName: 'file', headers: '', responsePath: 'url', domain: '', extraQuery: '' },
   s3: { endpoint: '', region: 'auto', bucket: '', accessKey: '', secretKey: '', domain: '' },
   aliyun: { accessKeyId: '', accessKeySecret: '', bucket: '', region: 'oss-cn-hangzhou', domain: '' },
   tencent: { secretId: '', secretKey: '', bucket: '', region: 'ap-guangzhou', domain: '' },
@@ -59,9 +76,17 @@ const EMPTY: ImageHostConfig = {
 interface ImageHostModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * 悬浮提示回调（由 App 传入全局浮层）。
+   *
+   * 之前提示渲染在弹窗 Body 顶部，字段一多就得滚动才能看到 ——
+   * 用户保存完配置，第一反应是「到底存没存上」，
+   * 提示却藏在需要滚动的地方。现在改为浮在右上角，视线不用移动。
+   */
+  onToast?: (kind: 'success' | 'error' | 'info', text: string, detail?: string) => void;
 }
 
-export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose }) => {
+export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose, onToast }) => {
   const [config, setConfig] = useState<ImageHostConfig>(EMPTY);
   const [presets, setPresets] = useState<Array<{ type: string; name: string; hint: string }>>([]);
   const [saving, setSaving] = useState(false);
@@ -95,9 +120,14 @@ export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose 
     try {
       const saved = await imageHostService.setConfig(config);
       setConfig(saved);
-      setMsg({ type: 'success', text: '图床配置已保存 ✓' });
+      const text = '图床配置已保存';
+      setMsg({ type: 'success', text });
+      // 有全局浮层就发一条；没有（比如被单独复用）则退回弹窗内提示
+      if (onToast) onToast('success', text);
     } catch (e: any) {
-      setMsg({ type: 'error', text: e?.message || '保存失败' });
+      const text = e?.message || '保存失败';
+      setMsg({ type: 'error', text });
+      if (onToast) onToast('error', '图床配置保存失败', text);
     } finally {
       setSaving(false);
     }
@@ -107,17 +137,49 @@ export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose 
   const handleTest = async () => {
     setTesting(true);
     setMsg({ type: null, text: '' });
+
+    onToast?.('info', '正在测试上传…');
+
     const tinyPng =
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
     try {
       const res = await imageHostService.upload(tinyPng, 'test.png');
-      if (res.ok) {
-        setMsg({ type: 'success', text: `上传测试成功 → ${res.url}` });
+      if (!res.ok || !res.url) {
+        const reason = res.error || '上传失败';
+        setMsg({ type: 'error', text: reason });
+        onToast?.('error', '上传测试失败', reason);
+        return;
+      }
+
+      // 光看返回的路径不算数 —— 公众号真正关心的是这个地址能不能取到图。
+      // 之前的问题正是「上传成功但链接缺域名」，预览正常、粘过去才裂。
+      // 这里主动探一次，把「能不能用」提前暴露出来。
+      let reachable = true;
+      let probeNote = '';
+      try {
+        const probe = await fetch(res.url, { method: 'GET', mode: 'no-cors' });
+        // no-cors 下 opaque 响应拿不到状态码，能 resolve 就说明地址有效
+        reachable = probe.type === 'opaque' || probe.ok || (probe.status >= 200 && probe.status < 400);
+        if (!reachable) probeNote = `（服务器返回 ${probe.status}）`;
+      } catch (e: any) {
+        reachable = false;
+        probeNote = `（无法访问：${e?.message || '网络错误'}）`;
+      }
+
+      if (reachable) {
+        setMsg({ type: 'success', text: `上传测试成功 ✓ ${res.url}` });
+        onToast?.('success', '上传测试成功', res.url);
       } else {
-        setMsg({ type: 'error', text: res.error || '上传失败' });
+        const detail =
+          `上传成功但链接无法访问${probeNote}：${res.url}\n` +
+          '若链接以 / 开头，请填写「图片域名」补全；否则检查图床的访问权限或防盗链设置。';
+        setMsg({ type: 'error', text: detail });
+        onToast?.('error', '上传成功但链接无法访问', `${res.url}${probeNote}。链接以 / 开头时请填写「图片域名」补全。`);
       }
     } catch (e: any) {
-      setMsg({ type: 'error', text: e?.message || '测试失败' });
+      const reason = e?.message || '测试失败';
+      setMsg({ type: 'error', text: reason });
+      onToast?.('error', '上传测试失败', reason);
     } finally {
       setTesting(false);
     }
@@ -156,21 +218,10 @@ export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose 
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {msg.type && (
-            <div
-              className={`p-3 rounded-xl border flex items-start gap-2 text-xs ${
-                msg.type === 'success'
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                  : 'bg-rose-50 text-rose-800 border-rose-200'
-              }`}
-            >
-              {msg.type === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              )}
-              <span className="break-all">{msg.text}</span>
-            </div>
+          {config.type === 'none' && (
+            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl p-3">
+              当前未启用图床，图片会以 base64 内嵌。图多时文章体积膨胀，粘贴到公众号可能卡顿或图片丢失。
+            </p>
           )}
 
           {/* 图床类型 */}
@@ -219,6 +270,7 @@ export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose 
                         </button>
                       )}
                     </div>
+                    {f.hint && <p className="text-[10.5px] text-gray-400 mt-1 leading-relaxed">{f.hint}</p>}
                   </div>
                 );
               })}
@@ -233,9 +285,27 @@ export const ImageHostModal: React.FC<ImageHostModalProps> = ({ isOpen, onClose 
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-100 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-gray-400">密钥仅存本机主进程，不进前端代码</span>
+        <div className="px-5 py-3.5 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3 shrink-0">
+          <span className="text-[11px] text-gray-400 shrink-0">密钥仅存本机主进程，不进前端代码</span>
           <div className="flex items-center gap-2">
+            {/* 结果条贴在按钮旁、位于滚动区之外 —— 保存/测试后视线不用移动。
+                顶部有全局浮层时这里是冗余的，保留作为降级（比如组件被单独复用）。 */}
+            {msg.type && (
+              <div
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] max-w-[240px] ${
+                  msg.type === 'success'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}
+              >
+                {msg.type === 'success' ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <span className="truncate">{msg.text.split('\n')[0]}</span>
+              </div>
+            )}
             {config.type !== 'none' && (
               <button
                 onClick={handleTest}
