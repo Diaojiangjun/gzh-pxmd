@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   FileEdit,
   LayoutGrid,
@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { TopNavBar } from './components/TopNavBar';
 import { EditorToolbar } from './components/EditorToolbar';
+import { GlobalToast, makeToast, type ToastItem } from './components/GlobalToast';
 import { MarkdownEditor } from './components/MarkdownEditor';
 import { PreviewPanel, PreviewPanelRef } from './components/PreviewPanel';
 const ThemeDesignerModal = lazyModal(
@@ -572,6 +573,17 @@ export default function App() {
     },
     []
   );
+
+  // ---- 全局浮层提示（上传状态等结构化反馈）----
+  // 与上面的 showToast 分工：showToast 是屏幕顶部的单条轻提示，
+  // 这里能承载「进行中 / 成功 / 失败」三种状态，且 z-index 高于所有弹窗。
+  const [globalToasts, setGlobalToasts] = useState<ToastItem[]>([]);
+  const pushToast = useCallback((t: ToastItem) => {
+    setGlobalToasts((prev) => [...prev.filter((x) => x.id !== t.id), t].slice(-4));
+  }, []);
+  const dismissToast = useCallback((id: string) => {
+    setGlobalToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   // Mermaid 图表异步渲染为 PNG 后的 markdown（公式由编译器内的 marked 扩展处理）
   const [processedMarkdown, setProcessedMarkdown] = useState(markdown);
@@ -1260,16 +1272,54 @@ export default function App() {
     refreshImageHostState();
   }, []);
 
-  /** 启用图床时上传并返回 https 外链，否则回退本地 base64 */
+  /**
+   * 启用图床时上传并返回 https 外链，否则回退本地 base64。
+   *
+   * 上传过程会走浮层提示：开始 → 进行中（动画）→ 成功/失败。
+   * 关键设计：**失败必须显式告知**。
+   * 早先的实现失败后只 console.warn 然后静默回退 base64，
+   * 用户完全无感 —— 直到粘贴到公众号才发现图片没上外链、可能撑爆正文。
+   */
   const uploadImageIfEnabled = async (dataUrl: string, fileName: string): Promise<string> => {
     if (!imageHostEnabled) return dataUrl;
+
+    const progressId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    pushToast({ id: progressId, kind: 'progress', text: `正在上传「${fileName}」` });
+
     try {
       const res = await imageHostService.upload(dataUrl, fileName);
-      if (res.ok && res.url) return res.url;
-      console.warn('图床上传失败，回退本地图片:', res.error);
-    } catch (e) {
+
+      if (res.ok && res.url) {
+        // 成功：把进行中那条原地替换为成功态，不额外弹一条免得刷屏
+        pushToast({
+          id: progressId,
+          kind: 'success',
+          text: `「${fileName}」已上传到图床`,
+          detail: res.url,
+        });
+        return res.url;
+      }
+
+      // 失败：说明原因，并明确告知已回退到本地内嵌
+      const reason = res.error || '未知原因';
+      console.warn('图床上传失败，回退本地图片:', reason);
+      pushToast({
+        id: progressId,
+        kind: 'error',
+        text: `「${fileName}」上传失败，已回退为本地图片`,
+        detail: `${reason}。图片仍会正常显示，但没上外链 —— 文章体积会变大。`,
+      });
+    } catch (e: any) {
+      const reason = e?.message || String(e);
       console.warn('图床上传异常，回退本地图片:', e);
+      pushToast({
+        id: progressId,
+        kind: 'error',
+        text: `「${fileName}」上传异常，已回退为本地图片`,
+        detail: `${reason}。可在图床设置里点「测试上传」排查。`,
+      });
     }
+
     return dataUrl;
   };
 
@@ -1840,6 +1890,9 @@ export default function App() {
         </div>
       )}
 
+      {/* 全局浮层提示：z-[200] 高于所有弹窗，任何位置都能看到 */}
+      <GlobalToast toasts={globalToasts} onDismiss={dismissToast} />
+
       {/* Local Article Manager Drawer (WeMD) */}
       <ArticleManagerDrawer
         isOpen={isArticleDrawerOpen}
@@ -2015,6 +2068,7 @@ export default function App() {
       {/* 图床设置（关闭后刷新启用状态） */}
       <ImageHostModal
         isOpen={isImageHostModalOpen}
+        onToast={(kind, text, detail) => pushToast(makeToast(kind, text, detail))}
         onClose={() => {
           setIsImageHostModalOpen(false);
           refreshImageHostState();
