@@ -17,7 +17,9 @@ jobs:
         include:
           - os: windows-latest
             script: pack:win
-            files: "release/*.exe"
+            files: |
+              release/*.exe
+              release/*.blockmap
           - os: macos-latest
             script: pack:mac
             files: |

@@ -22,12 +22,27 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = 'TreasureGzhEditor';
 
-/** 命名规则 —— verify-rename.mjs 也复用这个函数，避免两份实现漂移 */
+/**
+ * 命名规则 —— verify-rename.mjs 也复用这个函数，避免两份实现漂移。
+ *
+ * 注意 Windows runner 上产物名是「中文 + 空格」（如
+ * `宝藏排版器 Setup 1.0.1.exe`），必须用 endsWith('.exe') 判断，
+ * 不能用 startsWith 判断 —— 中文字符在不同 runner 上的编码表现不一致。
+ */
 export function targetName(f, ver) {
   if (f.endsWith('.AppImage')) return `${BASE}-linux-${ver}-x86_64.AppImage`;
   if (f.endsWith('.deb')) return `${BASE}-linux-${ver}-amd64.deb`;
-  if (f.startsWith('Setup') && f.endsWith('.exe')) return `${BASE}-Setup-${ver}-x64.exe`;
-  if (f.endsWith('.exe')) return `${BASE}-${ver}-x64-portable.exe`;
+  if (f.endsWith('.exe.blockmap')) {
+    // NSIS 的差分更新数据。名字必须跟安装包对应，否则自动更新会失效
+    const kind = f.includes('Setup') ? 'Setup' : 'portable';
+    return `${BASE}-${kind}-${ver}-x64.exe.blockmap`;
+  }
+  if (f.endsWith('.exe')) {
+    // Setup 安装包 vs 便携版：靠名字里有没有 Setup 区分（本地与 CI 都带）
+    return f.includes('Setup')
+      ? `${BASE}-Setup-${ver}-x64.exe`
+      : `${BASE}-${ver}-x64-portable.exe`;
+  }
   if (f.endsWith('.zip')) {
     return `${BASE}-macOS-${ver}-${f.includes('arm64') ? 'arm64' : 'x64'}.zip`;
   }

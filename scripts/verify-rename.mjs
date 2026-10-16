@@ -19,16 +19,24 @@ const VER = '1.0.1';
 // 注意：这里直接复用 rename-artifacts.mjs 的实现，而不是复刻一份 ——
 // 两份实现必然漂移，验证就失去了意义。
 
-// 真实的 v1.0.1 产物名（从 GitHub Release 拉下来的）
+// Windows runner 上产物名是「中文 + 空格」形式（用真实文件名，而不是我以为的
+// `Setup.1.0.1.exe`）—— 第一次 CI 就是因为这个映射不上而失败，
+// 而 macOS/Linux 因为本来就是 ASCII 名字所以通过了。跨平台差异只靠本地
+// 猜是猜不出来的，必须拿 CI 上真实产出的名字来测。
+const WIN_FILES = [
+  '宝藏排版器 Setup 1.0.1.exe',
+  '宝藏排版器 1.0.1.exe',
+  '宝藏排版器 Setup 1.0.1.exe.blockmap',
+];
+
 const INPUT = [
+  ...WIN_FILES,
   '-1.0.1-arm64.dmg',
   '-1.0.1-arm64-mac.zip',
   '-1.0.1.dmg',
   '-1.0.1-mac.zip',
   '1.0.1.AppImage',
   'treasure-gzh-editor_1.0.1_amd64.deb',
-  'Setup.1.0.1.exe',
-  '1.0.1.exe',
 ];
 
 let pass = 0;
@@ -57,6 +65,21 @@ console.log('');
 const targets = plan.map((p) => p.to).filter(Boolean);
 const dupTargets = targets.filter((t, i) => targets.indexOf(t) !== i);
 ok('目标名无重复（不会互相覆盖）', dupTargets.length === 0, [...new Set(dupTargets)].join(','));
+
+// 2b. Windows 的中文+空格文件名必须能映射 —— 第一轮 CI 就挂在这里
+const winSetup = targetName('宝藏排版器 Setup 1.0.1.exe', VER);
+const winPortable = targetName('宝藏排版器 1.0.1.exe', VER);
+ok(
+  'Windows 安装包（中文名）能映射且与便携版区分',
+  winSetup === 'TreasureGzhEditor-Setup-1.0.1-x64.exe' &&
+    winPortable === 'TreasureGzhEditor-1.0.1-x64-portable.exe',
+  `${winSetup} / ${winPortable}`
+);
+ok(
+  'Windows blockmap 能映射',
+  targetName('宝藏排版器 Setup 1.0.1.exe.blockmap', VER) ===
+    'TreasureGzhEditor-Setup-1.0.1-x64.exe.blockmap'
+);
 
 // 3. 目标名不以连字符开头 —— 那是本次要修的核心问题
 const leadingDash = targets.filter((t) => t.startsWith('-'));
