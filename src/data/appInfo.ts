@@ -10,7 +10,7 @@
 export const APP_INFO = {
   name: '宝藏排版器',
   englishName: 'Treasure WeChat Layout Editor',
-  version: '1.0.0',
+  version: '1.0.1',
   tagline: '跨平台微信公众号 Markdown 排版利器',
   intro:
     '专为微信公众号写作场景打造的桌面排版工具：用 Markdown 写作，一键产出可直接粘贴到公众号后台的富文本，排版不会在复制过程中走样。',

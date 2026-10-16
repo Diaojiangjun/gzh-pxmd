@@ -30,8 +30,10 @@ export interface ImageResolveOptions {
   mode: ImageMode;
   /** 单张图片超过这个字节数就跳过内嵌（否则 HTML 会大到公众号拒绝粘贴） */
   maxInlineBytes?: number;
-  /** mode=upload 时由调用方注入的上传函数 */
+  /** mode=upload 时由调用方注入的上传函数；失败时返回 null */
   uploader?: (file: TFile, data: ArrayBuffer) => Promise<string | null>;
+  /** 上传失败的回调（带原因），用于给用户明确反馈 */
+  onUploadError?: (fileName: string, reason: string) => void;
 }
 
 export interface ImageResolveResult {
@@ -45,6 +47,8 @@ export interface ImageResolveResult {
   oversized: string[];
   /** 找不到对应文件的图片（文件名列表） */
   missing: string[];
+  /** 上传图床失败的图片（文件名列表）—— 已退回内嵌，但必须让用户知道 */
+  failed: string[];
   /** 内嵌图片占用的总字节（base64 膨胀约 4/3，这里统计原始字节） */
   inlineBytes: number;
 }
@@ -138,6 +142,7 @@ export async function resolveImages(
     uploaded: 0,
     oversized: [],
     missing: [],
+    failed: [],
     inlineBytes: 0,
   };
 
@@ -191,7 +196,9 @@ export async function resolveImages(
           result.uploaded++;
           continue;
         }
-        // 上传失败：退回内嵌，而不是让图片消失
+        // 上传失败：明确告知，不静默退回 —— 用户需要知道哪些图没上外链
+        result.failed.push(file.name);
+        opts.onUploadError?.(file.name, '图床接口未返回可用链接');
       }
 
       // 超过体积上限就不内嵌 —— 否则粘贴到公众号会被拒

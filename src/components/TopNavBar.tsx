@@ -102,7 +102,7 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
             宝藏排版器 Pro
           </span>
           <span className="px-2 py-0.5 bg-[#F3F4F6] text-[#6B7280] text-[10px] rounded uppercase font-bold tracking-widest hidden sm:inline-block">
-            v1.0.0
+            v1.0.1
           </span>
         </div>
 

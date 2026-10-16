@@ -8,6 +8,11 @@
  * 只测「编译器产物 + 浏览器计算样式」，不涉及 Electron / UI，
  * 因此结论是确定性的，不受 HMR 或时序影响。
  */
+import pkgJson from '../package.json';
+import { APP_INFO } from '../src/data/appInfo';
+// 顶栏角标是 JSX 里的字面量，只能读源码文本核对。
+// 用 Vite 的 ?raw 而不是 Node 的 readFileSync —— 本文件跑在浏览器环境。
+import navBarSource from '../src/components/TopNavBar.tsx?raw';
 import { DEFAULT_THEMES, THEME_CATEGORIES } from '../src/data/defaultData';
 import { SAMPLE_MARKDOWN } from '../src/data/sampleMarkdown';
 import { compileWeChatMarkdown, validateCustomBlocks, KNOWN_CUSTOM_BLOCKS } from '../src/services/gzhCompiler';
@@ -60,6 +65,7 @@ import {
   AI_SERVICES,
   IMAGE_SERVICES,
 } from '../electron/ai';
+import { getByPath, absolutizeUrl, appendQuery } from '../electron/imageHost';
 import {
   TOOLBOX_SYSTEM_PROMPT,
   OPTIMIZE_DEFAULT_PROMPT,
@@ -1031,6 +1037,114 @@ out.push('=== 17. AI 能力（electron/ai.ts） ===');
 
   const fallback = buildToolboxMessages('custom', [], '正文');
   ok('自定义且无要求时走兜底指令', fallback[1].content.includes(OPTIMIZE_DEFAULT_PROMPT));
+}
+
+/* ── 18. 图床 URL 解析与绝对化 ── */
+out.push('=== 18. 图床 URL 解析与绝对化 ===');
+{
+  // ---- 路径解析：结构差异很大，数组也要支持 ----
+  eq('顶层字段', getByPath({ url: 'https://a.com/x.png' }, 'url'), 'https://a.com/x.png');
+  eq('嵌套对象', getByPath({ data: { url: 'https://a.com/x.png' } }, 'data.url'), 'https://a.com/x.png');
+  eq(
+    '数组下标 0.src',
+    getByPath([{ src: 'https://a.com/x.png' }], '0.src'),
+    'https://a.com/x.png'
+  );
+  eq(
+    '数组下标 + 括号写法 data.[0].src',
+    getByPath({ data: [{ src: 'https://a.com/x.png' }] }, 'data.[0].src'),
+    'https://a.com/x.png'
+  );
+  eq(
+    '对象数组 items.0.src',
+    getByPath({ items: [{ src: 'https://a.com/x.png' }] }, 'items.0.src'),
+    'https://a.com/x.png'
+  );
+  eq('深层路径', getByPath({ a: { b: { c: 'deep' } } }, 'a.b.c'), 'deep');
+  eq('路径不存在返回 undefined', getByPath({ a: 1 }, 'a.b.c'), undefined);
+  eq('非字符串值返回 undefined', getByPath({ n: 123 }, 'n'), undefined);
+  eq('空路径返回 undefined', getByPath({ a: 'x' }, ''), undefined);
+  eq('中途断链不抛错', getByPath({ a: null }, 'a.b.c.d'), undefined);
+
+  // ---- URL 绝对化：这是本次修的核心 ----
+  // 公众号只认绝对地址，相对路径必然裂图
+  const UP = 'https://pxwp.dpdns.org/upload';
+  eq(
+    '相对路径用上传地址的 origin 补全',
+    absolutizeUrl('/file/xxx.jpg', { uploadUrl: UP }),
+    'https://pxwp.dpdns.org/file/xxx.jpg'
+  );
+  eq(
+    '缺少前导斜杠也补全',
+    absolutizeUrl('file/xxx.jpg', { uploadUrl: UP }),
+    'https://pxwp.dpdns.org/file/xxx.jpg'
+  );
+  eq('绝对地址原样返回', absolutizeUrl('https://cdn.a.com/x.png', { uploadUrl: UP }), 'https://cdn.a.com/x.png');
+  eq('http 绝对地址也不动', absolutizeUrl('http://cdn.a.com/x.png', { uploadUrl: UP }), 'http://cdn.a.com/x.png');
+  eq(
+    '协议相对地址继承 https',
+    absolutizeUrl('//cdn.a.com/x.png', { uploadUrl: UP }),
+    'https://cdn.a.com/x.png'
+  );
+  eq(
+    '自定义域名优先于上传地址',
+    absolutizeUrl('/x.png', { domain: 'https://cdn.mine.com', uploadUrl: UP }),
+    'https://cdn.mine.com/x.png'
+  );
+  eq('自定义域名结尾斜杠不产生双斜杠', absolutizeUrl('/x.png', { domain: 'https://cdn.mine.com/', uploadUrl: UP }), 'https://cdn.mine.com/x.png');
+  eq('域名不带协议时按 https 拼接', absolutizeUrl('/x.png', { domain: 'cdn.mine.com' }), 'cdn.mine.com/x.png');
+  eq('空输入返回空串', absolutizeUrl('', { uploadUrl: UP }), '');
+  eq(
+    '上传地址非法且无域名时原样返回（交由调用方报错）',
+    absolutizeUrl('/x.png', { uploadUrl: 'not-a-url' }),
+    '/x.png'
+  );
+  eq(
+    '补全结果必须以 http 开头（不变量）',
+    /^https?:\/\//.test(absolutizeUrl('/file/a.jpg', { uploadUrl: UP })) ? 'yes' : 'no',
+    'yes'
+  );
+
+  // ---- 查询参数 ----
+  eq('空参数不改变地址', appendQuery('https://a.com/u', ''), 'https://a.com/u');
+  eq('无参数字符串追加 ?', appendQuery('https://a.com/u', 'returnFormat=full'), 'https://a.com/u?returnFormat=full');
+  eq('已有参数用 &', appendQuery('https://a.com/u?v=1', 'returnFormat=full'), 'https://a.com/u?v=1&returnFormat=full');
+  eq('前导 ? 被去掉', appendQuery('https://a.com/u', '?returnFormat=full'), 'https://a.com/u?returnFormat=full');
+  eq('前导 & 被去掉', appendQuery('https://a.com/u', '&a=1'), 'https://a.com/u?a=1');
+  eq('尾部空格与 & 被清理', appendQuery('https://a.com/u', '  a=1  '), 'https://a.com/u?a=1');
+
+  // ---- 端到端：模拟用户的真实图床响应 ----
+  // 上传 https://pxwp.dpdns.org/upload 返回 [{src:"/file/xxx.jpg"}]
+  const mockResp = [{ src: '/file/2026/abc.jpg' }];
+  const parsed = getByPath(mockResp, '0.src');
+  eq('端到端：解析出相对路径', parsed, '/file/2026/abc.jpg');
+  eq(
+    '端到端：补全后可直接用于公众号',
+    absolutizeUrl(parsed || '', { uploadUrl: UP }),
+    'https://pxwp.dpdns.org/file/2026/abc.jpg'
+  );
+}
+
+/* ── 19. 版本号一致性 ── */
+out.push('=== 19. 版本号一致性 ===');
+{
+  // 版本号散在三处：package.json、appInfo.ts、TopNavBar.tsx（顶栏角标是硬编码的）。
+  // 改一处忘另一处，用户就会看到「关于里说 1.0.1、顶栏写 1.0.0」这种割裂。
+  // 这里把三处钉在一起，以后升版本只改 package.json 就会被测出来。
+  const pkgVersion = (pkgJson as { version?: string }).version || '';
+  ok('package.json 有版本号', /^\d+\.\d+\.\d+$/.test(pkgVersion), pkgVersion);
+  eq('appInfo 的版本与 package.json 一致', APP_INFO.version, pkgVersion);
+
+  // 顶栏角标是 JSX 里的字面量，只能靠文本匹配核对
+  const navBadge = navBarSource.match(/>\s*v(\d+\.\d+\.\d+)\s*</)?.[1];
+  ok('顶栏能找到版本角标', !!navBadge, navBadge || '未找到');
+  eq('顶栏角标与 package.json 一致', navBadge || '', pkgVersion);
+
+  ok(
+    '版本号符合语义化版本',
+    /^\d+\.\d+\.\d+$/.test(pkgVersion),
+    pkgVersion
+  );
 }
 
 /* ── 汇总 ── */

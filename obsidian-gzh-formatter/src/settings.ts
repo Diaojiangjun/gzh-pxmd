@@ -11,8 +11,16 @@ export interface GzhFormatterSettings {
   imageMode: ImageMode;
   /** 单张图片内嵌的体积上限（字节），超过就跳过并提示 */
   maxInlineKB: number;
-  /** 图床上传函数占位（图床需要后端签名，插件内不内置密钥） */
+  /** 图床上传接口；留空则图片自动退回 base64 内嵌 */
   uploadEndpoint: string;
+  /** 图床返回相对路径时用于补全的域名；留空则取上传接口的 origin */
+  uploadDomain: string;
+  /** 上传时追加的查询参数，如 returnFormat=full */
+  uploadQuery: string;
+  /** 上传的文件字段名 */
+  uploadField: string;
+  /** 响应里图片链接的位置，如 url / data.url / 0.src */
+  uploadResponsePath: string;
   /** 链接转脚注（公众号里脚注体验更好） */
   convertLinksToFootnotes: boolean;
   /** 复制后是否插入推广位 */
@@ -29,6 +37,10 @@ export const DEFAULT_SETTINGS: GzhFormatterSettings = {
   appendPromo: false,
   promoText: '',
   uploadEndpoint: '',
+  uploadDomain: '',
+  uploadQuery: '',
+  uploadField: 'file',
+  uploadResponsePath: 'url',
 };
 
 export function resolveTheme(themeId: string): ThemeConfig {

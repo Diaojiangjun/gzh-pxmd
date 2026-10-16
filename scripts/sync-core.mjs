@@ -30,6 +30,7 @@ const FILES = [
   { from: 'src/utils/escape.ts', to: 'escape.ts' },
   { from: 'src/utils/sanitizeHtml.ts', to: 'sanitizeHtml.ts' },
   { from: 'src/utils/customCss.ts', to: 'customCss.ts' },
+  { from: 'electron/imageHost.ts', to: 'imageHost.ts' },
   { from: 'src/data/defaultData.ts', to: 'defaultData.ts' },
 ];
 
@@ -108,6 +109,49 @@ function rewriteImports(code) {
   );
 }
 
+/**
+ * electron/imageHost.ts 里混着两种代码：
+ *  - 纯函数（getByPath / absolutizeUrl / appendQuery）—— 插件要用
+ *  - Node 实现（hmacSha256 / sha256Hex 等 S3/OSS/COS 签名辅助，依赖 crypto 与 Buffer）
+ *
+ * 直接搬会把 `import crypto from 'crypto'` 带进 Obsidian 渲染进程，esbuild 打包时
+ * 报 "Could not resolve 'crypto'"（或塞一个跑不了的空壳）。
+ *
+ * 这里按「工具函数区」与「各家实现」两处标记分别截断，
+ * 保留中间的 getByPath / absolutizeUrl / appendQuery。
+ */
+function stripNodeOnlyParts(code, file) {
+  if (file !== 'imageHost.ts') return code;
+
+  // 1. 去掉 crypto import
+  let out = code.replace(/^import crypto from 'crypto';\n/m, '');
+
+  // 2. 去掉 hmacSha256 / sha256Hex / sha1Hex 三个 Node 签名辅助
+  const helpers = ['hmacSha256', 'sha256Hex', 'sha1Hex'];
+  for (const name of helpers) {
+    const start = out.indexOf(`function ${name}(`);
+    if (start === -1) continue;
+    // 从函数声明到下一个顶层 `}` （函数体里嵌套的括号不计入，因为要匹配缩进为 0 的闭合）
+    const end = out.indexOf('\n}', start);
+    if (end === -1) throw new Error(`imageHost.ts 里找不到 ${name} 的结束`);
+    out = out.slice(0, start) + out.slice(end + 3);
+  }
+
+  // 3. 截掉「各家实现」及其后的内容
+  const marker = '// ---------- 各家实现 ----------';
+  const idx = out.indexOf(marker);
+  if (idx === -1) {
+    throw new Error('imageHost.ts 里找不到「各家实现」分界标记，截断逻辑需要同步更新');
+  }
+
+  return (
+    out.slice(0, idx) +
+    marker +
+    '\n// （同步脚本已截断：S3 / OSS / COS 的签名依赖 Node crypto 与 Buffer，\n' +
+    '//   Obsidian 渲染进程用不到，只保留上面的 URL 解析与补全纯函数。）\n'
+  );
+}
+
 fs.mkdirSync(coreDir, { recursive: true });
 let bytes = 0;
 
@@ -115,6 +159,7 @@ for (const { from, to } of FILES) {
   const srcPath = path.join(root, from);
   if (!fs.existsSync(srcPath)) throw new Error(`源文件不存在：${from}`);
   let code = fs.readFileSync(srcPath, 'utf8');
+  code = stripNodeOnlyParts(code, to);
   code = rewriteImports(code);
 
   const banner =

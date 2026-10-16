@@ -7,6 +7,7 @@ import {
 } from './core/gzhCompiler';
 import { resolveTheme } from './settings';
 import { resolveImages, type ImageMode } from './imageAdapter';
+import { getByPath, absolutizeUrl, appendQuery } from './core/imageHost';
 import { DEFAULT_SETTINGS, type GzhFormatterSettings } from './settings';
 import { GzhView, GZH_VIEW_TYPE } from './view';
 
@@ -111,6 +112,11 @@ export default class GzhFormatterPlugin extends Plugin {
       mode: this.settings.imageMode,
       maxInlineBytes: this.settings.maxInlineKB * 1024,
       uploader: this.makeUploader(),
+      onUploadError: (name, reason) => {
+        // 上传失败不能静默 —— 用户需要知道哪些图没上外链
+        const detail = this.lastUploadError || reason;
+        new Notice(`「${name}」上传图床失败：${detail}。已回退为内嵌图片。`, 7000);
+      },
     });
     const html = compileWeChatMarkdown(withImages.markdown, theme, {
       type: 'none',
@@ -205,34 +211,70 @@ export default class GzhFormatterPlugin extends Plugin {
    *
    * 刻意做成「用户自己填接口」而不是内置某家图床：内置就等于要内置密钥，
    * 而密钥一旦进仓库就是泄露。默认留空 —— 未配置时图片自动退回内嵌，不会丢。
+   *
+   * 复用桌面版的核心逻辑（core/imageHost 的纯函数），避免两套实现漂移：
+   * 桌面版踩过的坑 —— 图床返回相对路径导致公众号裂图、数组响应结构取不到
+   * 值 —— 这里不会再犯。
    */
   private makeUploader() {
     const endpoint = this.settings.uploadEndpoint.trim();
     if (!endpoint) return undefined;
 
-    return async (file: TFile, data: ArrayBuffer): Promise<string | null> => {
+        return async (file: TFile, data: ArrayBuffer): Promise<string | null> => {
+      this.lastUploadError = '';
       try {
-        const base64 = btoa(
-          String.fromCharCode(...new Uint8Array(data))
+        const requestUrl = appendQuery(endpoint, this.settings.uploadQuery || '');
+        const form = new FormData();
+        form.append(
+          this.settings.uploadField || 'file',
+          new Blob([data], { type: file.extension ? `image/${file.extension}` : 'image/png' }),
+          file.name
         );
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filename: file.name,
-            mime: file.extension,
-            base64,
-          }),
+
+        const res = await fetch(requestUrl, { method: 'POST', body: form });
+        if (!res.ok) {
+          this.lastUploadError = `服务器返回 ${res.status}`;
+          return null;
+        }
+
+        const text = await res.text();
+        let json: any;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          this.lastUploadError = '响应不是 JSON';
+          return null;
+        }
+
+        const raw =
+          getByPath(json, this.settings.uploadResponsePath || 'url') ||
+          getByPath(json, 'data.url') ||
+          getByPath(json, 'url');
+        if (!raw) {
+          this.lastUploadError = `响应里找不到图片链接（路径：${this.settings.uploadResponsePath || 'url'}）`;
+          return null;
+        }
+
+        // 相对路径补全 —— 公众号只认绝对地址
+        const final = absolutizeUrl(raw, {
+          domain: this.settings.uploadDomain,
+          uploadUrl: endpoint,
         });
-        if (!res.ok) return null;
-        const json = (await res.json()) as { url?: string; data?: { url?: string } };
-        return json.url ?? json.data?.url ?? null;
-      } catch (e) {
+        if (!/^https?:\/\//i.test(final)) {
+          this.lastUploadError = `返回的是相对路径「${raw}」，请在设置里填写「图片域名」`;
+          return null;
+        }
+        return final;
+      } catch (e: any) {
+        this.lastUploadError = e?.message || String(e);
         console.warn('图床上传失败:', e);
         return null;
       }
     };
   }
+
+  /** 取最近一次上传失败的原因（供 onUploadError 回调展示） */
+  private lastUploadError = '';
 
   /** 背景 css 导出备用（后续如需导出整页 HTML 会用到） */
   backgroundCss() {
@@ -301,7 +343,7 @@ class GzhSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('图床接口地址')
       .setDesc(
-        'POST JSON 接口，需返回 { "url": "..." }。留空则自动退回内嵌模式。\n' +
+        'POST 接口，需返回包含图片链接的 JSON。留空则自动退回 base64 内嵌。\n' +
           '出于安全考虑插件不内置任何图床密钥，需要你自己实现或用第三方服务。'
       )
       .addText((t) => {
@@ -309,6 +351,57 @@ class GzhSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.uploadEndpoint);
         t.onChange(async (v) => {
           this.plugin.settings.uploadEndpoint = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('图床文件字段名')
+      .setDesc('上传时图片所在的表单字段名')
+      .addText((t) => {
+        t.setPlaceholder('file')
+          .setValue(this.plugin.settings.uploadField);
+        t.onChange(async (v) => {
+          this.plugin.settings.uploadField = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('响应中图片链接的位置')
+      .setDesc('支持 url、data.url、0.src（顶层数组第一项）等写法')
+      .addText((t) => {
+        t.setPlaceholder('url')
+          .setValue(this.plugin.settings.uploadResponsePath);
+        t.onChange(async (v) => {
+          this.plugin.settings.uploadResponsePath = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('图片域名（可选）')
+      .setDesc(
+        '图床若只返回 /file/xxx.jpg 这类相对路径，会用它补全。\n' +
+          '留空则自动取上传接口的域名 —— 公众号只认绝对地址。'
+      )
+      .addText((t) => {
+        t.setPlaceholder('https://cdn.example.com')
+          .setValue(this.plugin.settings.uploadDomain);
+        t.onChange(async (v) => {
+          this.plugin.settings.uploadDomain = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('附加查询参数（可选）')
+      .setDesc('部分图床需加参数才返回完整链接，如 returnFormat=full。一般留空即可。')
+      .addText((t) => {
+        t.setPlaceholder('returnFormat=full')
+          .setValue(this.plugin.settings.uploadQuery);
+        t.onChange(async (v) => {
+          this.plugin.settings.uploadQuery = v;
           await this.plugin.saveSettings();
         });
       });
