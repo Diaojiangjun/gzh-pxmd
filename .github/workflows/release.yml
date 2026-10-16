@@ -51,6 +51,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      # electron-builder 默认用 productName 命名，但跨平台 CI 上中文名会被吞掉，
+      # 产出 `-1.0.1-arm64.dmg` 这种开头是连字符的文件；Windows 的 exe 又不带
+      # 产品名（只有 `1.0.1.exe`），用户从下载列表里根本认不出是什么。
+      #
+      # 逻辑放在 scripts/rename-artifacts.mjs 而不是内联 shell：
+      # 内联 shell 在本地无法复现验证，CI 跑挂了要等几分钟才知道。
+      # 提交前可跑 `node scripts/verify-rename.mjs` 提前发现问题。
+      - name: Normalize artifact names
+        shell: bash
+        run: node scripts/rename-artifacts.mjs release "${GITHUB_REF_NAME#v}"
+
       - name: Upload assets to Release
         uses: softprops/action-gh-release@v2
         with:
